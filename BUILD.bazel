@@ -1,4 +1,5 @@
 load("@aspect_rules_js//npm:defs.bzl", "npm_package")
+load("@aspect_rules_js//js:defs.bzl", "js_test")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
 load("@tummycrypt_tinyland_auth_npm//:defs.bzl", "npm_link_all_packages")
 load("@tummycrypt_tinyland_auth_npm//:vitest/package_json.bzl", vitest_bin = "bin")
@@ -48,11 +49,10 @@ vitest_bin.vitest_test(
         glob(["src/**/*.ts"]) +
         glob(["tests/**/*.ts"]) +
         glob(["examples/**/*.ts"]) +
-        glob(["docs/**/*.md"])
+        glob(["docs/**/*.md"]) +
+        glob([".github/workflows/*.yml", ".github/workflows/*.yaml"])
     ) + [
         ".github/lanes.json",
-        ".github/workflows/ci.yml",
-        ".github/workflows/publish.yml",
         "BUILD.bazel",
         "MODULE.bazel",
         "README.md",
@@ -67,6 +67,32 @@ vitest_bin.vitest_test(
         "vitest.config.ts",
     ],
     log_level = "info",
+)
+
+# Execute the existing guards with their real inputs. Merely building //:test
+# does not run either guard, and the declaration check needs compiler output.
+js_test(
+    name = "release_metadata_test",
+    entry_point = "scripts/check-release-metadata.mjs",
+    data = [
+        "scripts/check-release-metadata.mjs",
+        "package.json",
+        "MODULE.bazel",
+        "BUILD.bazel",
+        "CHANGELOG.md",
+    ],
+)
+
+js_test(
+    name = "invitation_authority_test",
+    entry_point = "scripts/check-invitation-authority.mjs",
+    data = [
+        ":tinyland_auth",
+        ":node_modules/typescript",
+        "scripts/check-invitation-authority.mjs",
+        "src/index.ts",
+        "package.json",
+    ],
 )
 
 ts_project(

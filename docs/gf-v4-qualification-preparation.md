@@ -11,7 +11,7 @@ rollout coordination remain with TIN-2611. The held auth 0.8 train is unchanged.
 
 | Action | Bazel command and existing targets | Result |
 | --- | --- | --- |
-| `unit-tests` | `test //:test` | `status-only` |
+| `unit-tests` | `test //:test //:release_metadata_test //:invitation_authority_test` | `status-only` |
 | `package-check` | `build //:pkg //:typecheck` | `status-only` |
 
 Both request the abstract `rbe-linux-x86_64` capability. That declaration does
@@ -46,12 +46,18 @@ The existing `ci.yml`, `publish.yml`, release scripts, versions, package scope,
 registry pins and publication permissions remain unchanged. Their results are
 not relabeled as v4 evidence, nor are they a fallback for a refused v4 action.
 
-The new plan is qualification-only, not full release-validation parity.
-`//:test` and `//:pkg` do not run the complete release metadata guard,
-`publint`, or the invitation-authority guard over generated `dist/index.d.ts`.
-Keep those existing release gates. Migrating them into qualified Bazel targets,
-exporting an actual artifact and publishing it require separate reviewed work.
-Do not delete a legacy assertion or release gate merely to activate this caller.
+The new plan is qualification-only, not full release-validation parity. The
+test action now runs the existing release metadata script and invitation
+authority script as explicit Bazel tests. The latter consumes `:tinyland_auth`
+compiler outputs, including the real generated `dist/index.d.ts`; it does not
+substitute a copied declaration fixture. The metadata target checks source
+version/changelog alignment; the release-time GitHub tag context remains a
+separate gate and is not inferred from a hermetic test.
+
+`publint`, artifact export and publication remain separate release work. Keep
+all existing release gates. Do not delete a legacy assertion or release gate
+merely to activate this caller. Test runfiles include all workflow YAMLs so an
+added active caller cannot be hidden from the inertness contract by omission.
 
 ## Module lock and local preparation
 
@@ -142,3 +148,17 @@ execution, cache-hit, worker or provider-admission receipt. No Bazel build/test,
 GF dispatch, publication, credential mutation or infrastructure action occurred.
 The source lock closes the missing-byte prerequisite only; all installation,
 admission, closure and activation gates above remain.
+
+The subsequent source follow-up adds explicit Bazel execution targets for the
+unchanged release-metadata and invitation-authority scripts. Remote execution
+of those new targets remains unqualified until the same activation prerequisites
+are satisfied; generated-declaration diagnostics do not replace that receipt.
+
+Follow-up diagnostics on 2026-09-20: the exact released schema accepts the
+expanded test action, and five contract cases plus six existing authority cases
+pass. TypeScript 5.9.3 (the declared Bazel compiler version) emitted actual auth
+declarations into a new temporary directory; the existing invitation guard
+accepted that generated surface and rejected an injected executable invitation
+export. The unchanged metadata guard accepted source version `0.7.1` and
+rejected a deliberately mismatched tag. BUILD parsing and whitespace checks
+pass. No local output is offered as remote qualification or a release artifact.

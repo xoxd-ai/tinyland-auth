@@ -3,7 +3,7 @@
   "actions": {
     "unit-tests": {
       "command": "test",
-      "targets": ["//:test"],
+      "targets": ["//:test", "//:release_metadata_test", "//:invitation_authority_test"],
       "capability": "rbe-linux-x86_64",
       "result": { "mode": "status-only" }
     },

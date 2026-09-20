@@ -13,7 +13,7 @@ describe('inert GF v4 qualification source contract', () => {
       actions: {
         'unit-tests': {
           command: 'test',
-          targets: ['//:test'],
+          targets: ['//:test', '//:release_metadata_test', '//:invitation_authority_test'],
           capability: 'rbe-linux-x86_64',
           result: { mode: 'status-only' },
         },
@@ -63,6 +63,21 @@ jobs:
       expect(await readText(`.github/workflows/${name}`)).not.toContain('spoke-ci-v4.yml');
     }
     expect(await readText(candidatePath)).toContain('# INERT SOURCE CANDIDATE');
+  });
+
+  it('executes standing release guards against declared source and generated inputs', async () => {
+    const build = await readText('BUILD.bazel');
+    const metadata = build.match(/js_test\(\s*name = "release_metadata_test",([\s\S]*?)\n\)/)?.[1];
+    const invitations = build.match(/js_test\(\s*name = "invitation_authority_test",([\s\S]*?)\n\)/)?.[1];
+    expect(metadata).toContain('entry_point = "scripts/check-release-metadata.mjs"');
+    for (const input of ['package.json', 'MODULE.bazel', 'BUILD.bazel', 'CHANGELOG.md']) {
+      expect(metadata).toContain(`"${input}"`);
+    }
+    expect(invitations).toContain('entry_point = "scripts/check-invitation-authority.mjs"');
+    for (const input of [':tinyland_auth', ':node_modules/typescript', 'src/index.ts', 'package.json']) {
+      expect(invitations).toContain(`"${input}"`);
+    }
+    expect(build).toContain('glob([".github/workflows/*.yml", ".github/workflows/*.yaml"])');
   });
 
   it('retains the existing release gates rather than treating status as publication', async () => {
