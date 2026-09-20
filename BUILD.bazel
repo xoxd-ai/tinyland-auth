@@ -50,11 +50,13 @@ vitest_bin.vitest_test(
         glob(["examples/**/*.ts"]) +
         glob(["docs/**/*.md"])
     ) + [
+        ".github/lanes.json",
         ".github/workflows/ci.yml",
         ".github/workflows/publish.yml",
         "BUILD.bazel",
         "MODULE.bazel",
         "README.md",
+        "docs/gf-v4-qualification.candidate.yml",
         "scripts/check-invitation-authority.mjs",
         "scripts/check-release-metadata.mjs",
         "scripts/ci-bazel-test.sh",

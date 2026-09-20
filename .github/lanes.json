@@ -1,0 +1,17 @@
+{
+  "schema_version": 3,
+  "actions": {
+    "unit-tests": {
+      "command": "test",
+      "targets": ["//:test"],
+      "capability": "rbe-linux-x86_64",
+      "result": { "mode": "status-only" }
+    },
+    "package-check": {
+      "command": "build",
+      "targets": ["//:pkg", "//:typecheck"],
+      "capability": "rbe-linux-x86_64",
+      "result": { "mode": "status-only" }
+    }
+  }
+}
