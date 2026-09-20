@@ -30,3 +30,15 @@ export {
   resolveAuthTenantId,
   type TenantScopedStorage,
 } from './fixedTenant.js';
+
+export {
+  FileTotpEnrollmentCoordinator,
+  TotpEnrollmentError,
+  type FileTotpEnrollmentConfig,
+  type TotpEnrollmentBinding,
+  type TotpEnrollmentCurrentState,
+  type TotpEnrollmentSetup,
+  type TotpEnrollmentCompletion,
+  type TotpEnrollmentReceipt,
+  type TotpEnrollmentUserPatch,
+} from './file-totp-enrollment.js';

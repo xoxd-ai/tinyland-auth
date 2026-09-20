@@ -36,6 +36,46 @@ const DEFAULT_CONFIG: FileStorageConfig = {
   sessionMaxAge: 7 * 24 * 60 * 60 * 1000, 
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isText(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && !value.includes('\0');
+}
+
+function isTimestamp(value: unknown): value is string {
+  return isText(value) && Number.isFinite(Date.parse(value));
+}
+
+function isStoredFactor(value: unknown, handle: string): value is EncryptedTOTPSecret {
+  if (!isRecord(value)) return false;
+  return value.handle === handle && isText(value.userId)
+    && ['encryptedSecret', 'iv', 'authTag', 'salt'].every(key => isText(value[key]))
+    && isTimestamp(value.createdAt)
+    && (value.lastUsedAt === undefined || isTimestamp(value.lastUsedAt))
+    && (value.lastUsedTotpStep === undefined || (Number.isSafeInteger(value.lastUsedTotpStep) && (value.lastUsedTotpStep as number) >= 0))
+    && typeof value.backupCodesGenerated === 'boolean'
+    && Number.isSafeInteger(value.version) && (value.version as number) >= 1;
+}
+
+function isStoredBackupCodes(value: unknown, userId: string): value is BackupCodeSet {
+  if (!isRecord(value) || value.userId !== userId || !Array.isArray(value.codes)
+    || !isTimestamp(value.generatedAt)
+    || (value.lastUsedAt !== undefined && !isTimestamp(value.lastUsedAt))) return false;
+  const ids = new Set<string>();
+  const hashes = new Set<string>();
+  return value.codes.every(code => {
+    if (!isRecord(code) || !isText(code.id) || typeof code.hash !== 'string'
+      || !/^[a-f0-9]{64}$/.test(code.hash) || typeof code.used !== 'boolean'
+      || (code.usedAt !== undefined && !isTimestamp(code.usedAt))
+      || ids.has(code.id) || hashes.has(code.hash)) return false;
+    ids.add(code.id);
+    hashes.add(code.hash);
+    return true;
+  });
+}
+
 
 
 
@@ -145,8 +185,20 @@ export class FileStorageAdapter implements IStorageAdapter {
     const tempPath = `${filePath}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`;
 
     try {
-      await fs.writeFile(tempPath, JSON.stringify(data, null, 2), 'utf8');
-      await fs.rename(tempPath, filePath);  
+      const temporary = await fs.open(tempPath, 'wx', 0o600);
+      try {
+        await temporary.writeFile(JSON.stringify(data, null, 2), 'utf8');
+        await temporary.sync();
+      } finally {
+        await temporary.close();
+      }
+      await fs.rename(tempPath, filePath);
+      const directory = await fs.open(path.dirname(filePath), 'r');
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
     } catch (error) {
       
       try { await fs.unlink(tempPath); } catch {  }
@@ -342,15 +394,12 @@ export class FileStorageAdapter implements IStorageAdapter {
   
 
   async getTOTPSecret(handle: string): Promise<EncryptedTOTPSecret | null> {
-    try {
-      const secret = await this.readJsonFile<EncryptedTOTPSecret | null>(
-        this.getTotpPath(handle),
-        null
-      );
-      return secret;
-    } catch {
-      return null;
-    }
+    // Only a missing file is absence. Parse, permissions and shape failures
+    // must never authorize enrollment to replace an existing credential.
+    const secret = await this.readJsonFile<unknown>(this.getTotpPath(handle), undefined);
+    if (secret === undefined) return null;
+    if (!isStoredFactor(secret, handle)) throw new Error('Invalid stored TOTP credential');
+    return secret;
   }
 
   async saveTOTPSecret(handle: string, secret: EncryptedTOTPSecret): Promise<void> {
@@ -371,14 +420,10 @@ export class FileStorageAdapter implements IStorageAdapter {
   
 
   async getBackupCodes(userId: string): Promise<BackupCodeSet | null> {
-    try {
-      return await this.readJsonFile<BackupCodeSet | null>(
-        this.getBackupCodesPath(userId),
-        null
-      );
-    } catch {
-      return null;
-    }
+    const codes = await this.readJsonFile<unknown>(this.getBackupCodesPath(userId), undefined);
+    if (codes === undefined) return null;
+    if (!isStoredBackupCodes(codes, userId)) throw new Error('Invalid stored backup-code credential');
+    return codes;
   }
 
   async saveBackupCodes(userId: string, codeSet: BackupCodeSet): Promise<void> {

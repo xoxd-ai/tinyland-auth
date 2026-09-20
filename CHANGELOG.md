@@ -1,5 +1,17 @@
 # @tummycrypt/tinyland-auth
 
+## Unreleased
+
+- Add file-native, session-bound ordinary TOTP enrollment with encrypted pending
+  custody, frozen completion receipts and recovery-gated durable projections.
+  Applied retries never restore older factors or reset used backup codes.
+- Acknowledge file-adapter JSON writes after file sync, atomic rename and
+  directory sync. Deployment scope remains one application process.
+- Fail closed on unreadable, malformed or incorrectly bound stored TOTP and
+  backup-code credentials; only missing files count as absent credentials.
+- Add explicit-user-only `content.own.publish` and `federation.own.deliver`
+  capabilities without default role grants or changes to existing permissions.
+
 ## 0.7.1
 
 ### Patch Changes

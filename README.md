@@ -57,6 +57,16 @@ Implement `IStorageAdapter` for your backend:
 - **Built-in**: `MemoryStorageAdapter`, `FileStorageAdapter`
 - **Separate packages**: `@tummycrypt/tinyland-auth-pg` (PostgreSQL), `@tummycrypt/tinyland-auth-redis` (Upstash Redis)
 
+### Ordinary onboarding enrollment (source candidate)
+
+The additive `./storage` export `FileTotpEnrollmentCoordinator` provides
+session-bound server-held pending TOTP material and committed/applied recovery
+receipts for the existing single-process databaseless deployment. Applications
+supply durable projections and route protected auth reads and mutations through
+the shared recovery gate. It does not adopt the held 0.8 bootstrap train or
+provide multi-replica guarantees. See the
+[API and integration contract](docs/file-totp-enrollment.md).
+
 ## Tinyland Databaseless MVP
 
 Tinyland's intended app shape is handle-first and email-less by default:
@@ -125,7 +135,7 @@ rank; TIN-1606 precedent).
 
 | Role | Axis | Feature charter |
 | --- | --- | --- |
-| `super_admin` | governance-spine | System owner; every permission. |
+| `super_admin` | governance-spine | System owner; every administrative permission. Own publication/federation requires explicit grants. |
 | `admin` | governance-spine | General administration across domains. |
 | `moderator` | governance-spine | Fedi / community moderation. |
 | `editor` | specialist | Blog editorial. |

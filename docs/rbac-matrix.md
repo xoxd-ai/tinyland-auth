@@ -65,7 +65,40 @@ Examples:
 - `admin` outranks `moderator` but does not get `admin.content.moderate`.
 - `moderator`, `admin`, and `super_admin` have `admin.federation.deliver`;
   `editor`, `event_manager`, `contributor`, `member`, and `viewer` do not.
-- `super_admin` is the exception: `hasPermission()` grants it every permission.
+- `super_admin` holds every administrative permission. Own-scope permissions
+  below remain explicit-only, including for `super_admin`.
+
+## Explicit Own-Scope Permissions
+
+The separately grantable `content.own.publish` and `federation.own.deliver`
+capabilities use the existing `AdminUser.permissions[]` carrier. Neither is
+included in any `ROLE_PERMISSIONS` row or in `MEMBER_SELF_SERVICE_CORE`;
+registration does not grant either capability to a member or administrator.
+`EXPLICIT_USER_PERMISSIONS` identifies this explicit-only vocabulary.
+
+- `PERMISSIONS.CONTENT_OWN_PUBLISH` allows publication of the principal's own
+  public content when the consuming application's ownership and security
+  checks pass.
+- `PERMISSIONS.FEDERATION_OWN_DELIVER` allows outbound delivery for the
+  principal's own actor/content when those checks and federation policy pass.
+
+Check the current authoritative user with `hasPermission(user, permission)`;
+do not infer either grant from a role or a stale session projection. This
+permission check alone does not establish ownership, active account state,
+completed onboarding/MFA, or consent to public delivery. The application must
+enforce those conditions independently. The two grants are independent:
+publishing does not imply delivery, and delivery does not imply publishing.
+
+These capabilities grant no cross-user publication, moderation, deletion,
+invitation authority, administrative federation access, or role promotion.
+Existing role-only helpers such as `canCreatePublicContent(role)` and
+`canDeliverFederation(role)` keep their administrative meanings and do not
+inspect explicit user grants. Neither permission is accepted implicitly from
+an invitation payload; trusted application policy must issue explicit grants.
+
+`Permission` is the complete permission union; `AdminPermission` keeps the
+administrative vocabulary and `OwnPermission` names the two own-scope IDs.
+Both IDs map to existing `content`/`federation` feature domains, not new domains.
 
 ## Downstream Test Guidance
 
@@ -75,6 +108,8 @@ Consumer repos such as `tinyland.dev` should test:
 - permission checks against `ROLE_PERMISSIONS`
 - product-specific helper behavior where route policy uses helpers
 - explicit capability gaps between peer/specialized roles
+- absent/individual/revoked own-scope grants, ownership checks, and unchanged
+  administrative authority (including `super_admin`'s explicit-only boundary)
 
 Do not write a property test that assumes `ROLE_PERMISSIONS[higher]` is a
 superset of `ROLE_PERMISSIONS[lower]`. That property is false by design.
