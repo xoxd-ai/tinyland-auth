@@ -42,9 +42,15 @@ ci-templates main, v5.1.1, or proposed publisher inputs.
 
 ## Preserve existing authority
 
-The existing `ci.yml`, `publish.yml`, release scripts, versions, package scope,
-registry pins and publication permissions remain unchanged. Their results are
-not relabeled as v4 evidence, nor are they a fallback for a refused v4 action.
+The inert qualification preparation did not change `ci.yml`, `publish.yml`,
+release scripts, versions, package scope, registry pins or publication
+permissions. The later, separately approved
+[0.7.2 source candidate](release-candidate-0.7.2.md) aligns version metadata only;
+its root-version extension usage digests were regenerated and strict lock replay
+passed as recorded there. It does not activate this caller or grant publication
+authority. Existing
+workflow results are not relabeled as v4 evidence, nor are they a fallback for
+a refused v4 action.
 
 The new plan is qualification-only, not full release-validation parity. The
 test action now runs the existing release metadata script and invitation

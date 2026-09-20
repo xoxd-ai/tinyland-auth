@@ -1,6 +1,12 @@
 # @tummycrypt/tinyland-auth
 
-## Unreleased
+## 0.7.2
+
+Unreleased, provisional compatible-launch source candidate. This heading and
+aligned metadata do not reserve the version or authorize publication. See
+[release disposition and remaining gates](docs/release-candidate-0.7.2.md).
+
+### Patch Changes
 
 - Add file-native, session-bound ordinary TOTP enrollment with encrypted pending
   custody, frozen completion receipts and recovery-gated durable projections.
@@ -9,8 +15,15 @@
   directory sync. Deployment scope remains one application process.
 - Fail closed on unreadable, malformed or incorrectly bound stored TOTP and
   backup-code credentials; only missing files count as absent credentials.
+  This intentionally changes error handling for invalid credential state;
+  filesystems must support acknowledged file and directory sync.
 - Add explicit-user-only `content.own.publish` and `federation.own.deliver`
   capabilities without default role grants or changes to existing permissions.
+  Even `super_admin` needs an explicit grant for these two new capabilities;
+  existing administrative permission behavior is unchanged.
+- Prepare an inert GF v4 qualification plan and real module lock, and register
+  the existing release metadata and generated invitation-declaration guards as
+  Bazel tests. No active v4 workflow or publication authority is added.
 
 ## 0.7.1
 
