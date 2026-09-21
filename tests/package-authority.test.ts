@@ -59,7 +59,7 @@ describe('package release authority', () => {
       );
       expect(workflow).toContain('bazel_targets: "//:pkg //:test //:typecheck"');
       expect(workflow).toContain('npm_publish_mode: disabled');
-      expect(workflow).toContain('github_package_name: "@tinyland-inc/tinyland-auth"');
+      expect(workflow).not.toContain('github_package_name');
     }
   });
 
