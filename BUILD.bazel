@@ -50,7 +50,9 @@ vitest_bin.vitest_test(
         glob(["tests/**/*.ts"]) +
         glob(["examples/**/*.ts"]) +
         glob(["docs/**/*.md"]) +
-        glob([".github/workflows/*.yml", ".github/workflows/*.yaml"])
+        # Retirement leaves this empty; future callers must remain visible to
+        # the inertness contract in the test runfiles.
+        glob([".github/workflows/*.yml", ".github/workflows/*.yaml"], allow_empty = True)
     ) + [
         ".github/lanes.json",
         "BUILD.bazel",

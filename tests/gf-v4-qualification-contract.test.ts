@@ -78,7 +78,14 @@ jobs:
     for (const input of [':tinyland_auth', ':node_modules/typescript', 'src/index.ts', 'package.json']) {
       expect(invitations).toContain(`"${input}"`);
     }
-    expect(build).toContain('glob([".github/workflows/*.yml", ".github/workflows/*.yaml"])');
+  });
+
+  it('allows retired workflows to be absent while retaining future YAML callers in test runfiles', async () => {
+    const build = await readText('BUILD.bazel');
+    const test = build.match(/vitest_bin\.vitest_test\(\s*name = "test",([\s\S]*?)\n\)/)?.[1];
+    expect(test).toContain(
+      'glob([".github/workflows/*.yml", ".github/workflows/*.yaml"], allow_empty = True)',
+    );
   });
 
   it('retains meaningful package validation without a provider publisher', async () => {
