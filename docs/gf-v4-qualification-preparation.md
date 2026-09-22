@@ -1,6 +1,6 @@
 # Auth GF v4 qualification: inert source preparation
 
-As of 2026-09-20, this is a source candidate, not enrollment, an activated
+As of 2026-09-21, this is a source candidate, not enrollment, an activated
 workflow, a passed remote invocation, package publication, or runtime authority.
 It belongs to the canonical auth source work in TIN-4182; installation and
 rollout coordination remain with TIN-2611. The held auth 0.8 train is unchanged.
@@ -11,7 +11,7 @@ rollout coordination remain with TIN-2611. The held auth 0.8 train is unchanged.
 
 | Action | Bazel command and existing targets | Result |
 | --- | --- | --- |
-| `unit-tests` | `test //:test //:release_metadata_test //:invitation_authority_test` | `status-only` |
+| `unit-tests` | `test //:test //:release_metadata_test //:invitation_authority_test //:package_artifact_test` | `status-only` |
 | `package-check` | `build //:pkg //:typecheck` | `status-only` |
 
 Both request the abstract `rbe-linux-x86_64` capability. That declaration does
@@ -22,9 +22,9 @@ inputs; a resolver constructs the binding rather than the caller inventing one.
 
 The caller candidate is `docs/gf-v4-qualification.candidate.yml`, deliberately
 outside `.github/workflows/`. It references the existing immutable ci-templates
-v5.1.0 source commit `32e39ced0008edf4564ebeb173a5e8fbf069e28f`:
+v5.1.1 source commit `ae836d8400d5784d74af4fecc020f225d1c2d08e`:
 
-`xoxd-ai/ci-templates/.github/workflows/spoke-ci-v4.yml@32e39ced0008edf4564ebeb173a5e8fbf069e28f`
+`xoxd-ai/ci-templates/.github/workflows/spoke-ci-v4.yml@ae836d8400d5784d74af4fecc020f225d1c2d08e`
 
 This release admits push and same-repository pull-request events, selecting the
 exact push revision or PR head, not the synthetic merge revision. The candidate
@@ -33,37 +33,51 @@ limits pushes and PR bases to `main`, grants only `contents: read` and
 or publication. The renamed workflow identity must be admitted by current
 owner policy; an old-owner redirect is not evidence of that admission.
 
-Status-only actions return terminal status, not exported package files. They
-need no `--result-dir` and create no qualified-result directory. In particular,
+Status-only actions return terminal status, not exported package files. The
+v5.1.1 carrier now supplies its client `--result-dir` under `RUNNER_TEMP`; that
+argument does not change this plan into an export action. In particular,
 `build //:pkg` is not artifact export or a publication transaction. The package
 target contains a package directory; do not claim that it is already a suitable
-`export-regular-files` target. This preparation does not depend on unreleased
-ci-templates main, v5.1.1, or proposed publisher inputs.
+`export-regular-files` target. The exact released v5.1.1 carrier was reviewed
+on 2026-09-21 and selected for this inert source only. Its result-directory
+addition grants no installed admission, output-publication or activation claim.
+The previous v5.1.0 pin remains historical diagnostic provenance below; no
+ci-templates main or future release is adopted implicitly.
 
-## Preserve existing authority
+## Retire provider publication, preserve graph validation
 
-The inert qualification preparation did not change `ci.yml`, `publish.yml`,
-release scripts, versions, package scope, registry pins or publication
-permissions. The later, separately approved
-[0.7.2 source candidate](release-candidate-0.7.2.md) aligns version metadata only;
-its root-version extension usage digests were regenerated and strict lock replay
-passed as recorded there. It does not activate this caller or grant publication
-authority. Existing
-workflow results are not relabeled as v4 evidence, nor are they a fallback for
-a refused v4 action.
+TIN-89 and TIN-1629 make Bzlmod plus the append-only Tinyland BCR the sole
+first-party delivery authority. GitHub source tags/releases bind source
+identity. npmjs and GitHub Packages are neither delivery lanes nor fallbacks.
+The 2026-09-21 correction deletes the legacy CI/publish pair, provider
+permissions/inputs/secrets and the network `npx` Bazel bootstrap, while keeping
+historical tags/artifacts unchanged. The existing source `//:pkg` remains an
+internal Bazel package directory; `publishable = False` and manifest
+`private: true` prevent provider publication. This does not add a publisher.
 
-The new plan is qualification-only, not full release-validation parity. The
-test action now runs the existing release metadata script and invitation
-authority script as explicit Bazel tests. The latter consumes `:tinyland_auth`
-compiler outputs, including the real generated `dist/index.d.ts`; it does not
-substitute a copied declaration fixture. The metadata target checks source
-version/changelog alignment; the release-time GitHub tag context remains a
-separate gate and is not inferred from a hermetic test.
+There are now no active workflow YAMLs in this source candidate. Missing GF
+admission means qualification cannot run; it does not mean success or authorize
+an old workflow, local execution, hosted runner or bespoke wrapper fallback.
+The [0.7.2 candidate](release-candidate-0.7.2.md), held auth 0.8 train, unchanged
+dependency/toolchain pins and separate release approval remain intact.
 
-`publint`, artifact export and publication remain separate release work. Keep
-all existing release gates. Do not delete a legacy assertion or release gate
-merely to activate this caller. Test runfiles include all workflow YAMLs so an
-added active caller cannot be hidden from the inertness contract by omission.
+Validation survives as finite graph targets. The metadata test checks source
+version/changelog alignment, not release-time GitHub tag identity. The
+invitation-authority test depends on `:tinyland_auth` and explicitly sets
+`include_types = True`, supplying actual generated `dist/index.d.ts` rather
+than a fixture. `//:package_artifact_test` validates the real `//:pkg` identity,
+export map, dependencies and nonempty JS/declaration files, and calls locked
+publint with `pack: false` over those exact bytes. No npm/pnpm pack or provider
+publish command is invoked. Warnings retain the old publint severity; errors
+fail. The declaration check, package-artifact test and ordinary unit tests all
+belong to the `test` action, not merely a build.
+
+The plan is qualification-only. Artifact export, exact source archive/SRI,
+tag/version validation, append-only BCR promotion and external consumer proof
+remain release work. Test runfiles include all workflow YAMLs so a newly added
+active caller cannot be hidden from the retirement/inertness contract. The
+removed legacy TypeScript 6.0.3 task is not claimed as a retained remote check;
+the existing Bazel compiler remains 5.9.3.
 
 ## Module lock and local preparation
 
@@ -86,11 +100,11 @@ Validate the plan against the exact released schema and full JSON Schema
 engine, not the current template checkout or a weaker handwritten validator:
 
 ```text
-python3 <reviewed-v5.1.0-checkout>/scripts/manifest-schema-validate.py \
-  <reviewed-v5.1.0-checkout>/schemas/lanes.schema.json .github/lanes.json
+python3 <reviewed-v5.1.1-checkout>/scripts/manifest-schema-validate.py \
+  <reviewed-v5.1.1-checkout>/schemas/lanes.schema.json .github/lanes.json
 ```
 
-The checkout must be exactly `32e39ced0008edf4564ebeb173a5e8fbf069e28f`, and the
+The checkout must be exactly `ae836d8400d5784d74af4fecc020f225d1c2d08e`, and the
 selected Python must import `jsonschema`. The released schema SHA-256 is
 `4fef58645b8cd367a4336a66eaee629388c8a949a06d85becc97cfc1be82e3b8`;
 the released validator SHA-256 is
@@ -125,13 +139,15 @@ added; absence of runner pickup is not an inertness guarantee.
    evidence plus measurement attribution; distinguish a cold execution from a
    repeat cache hit. Green Actions status or runner pickup alone is not proof.
 
-Publication remains separate, with its original release checks, artifact
-qualification, immutable version, BCR registration and explicit authority. No
-package release or application rollout follows automatically from this plan.
+Source release and BCR promotion remain separate, with meaningful graph
+checks, exact artifact/source evidence, immutable version and explicit
+authority. No provider package publication or application rollout follows
+from this plan.
 
 ## Preparation diagnostic outcome
 
-On 2026-09-20, the plan passed the exact released validator and schema above
+On 2026-09-20, the then-current plan and v5.1.0 caller at
+`32e39ced0008edf4564ebeb173a5e8fbf069e28f` passed its released validator/schema
 with the full `jsonschema` engine. The focused inert-caller suite and existing
 `tests/package-authority.test.ts` passed together: 2 files, 10 tests. These
 local diagnostics do not qualify remote execution or publication.
@@ -168,3 +184,9 @@ accepted that generated surface and rejected an injected executable invitation
 export. The unchanged metadata guard accepted source version `0.7.1` and
 rejected a deliberately mismatched tag. BUILD parsing and whitespace checks
 pass. No local output is offered as remote qualification or a release artifact.
+
+The 2026-09-21 TIN-89 retirement and new artifact/runfiles checks have not been
+executed locally. Earlier passing results are historical to their named
+preparation steps, not evidence for this changed source. Exact released-schema
+validation, graph tests and source-bound lock verification remain outstanding;
+no lock bytes or digests were edited as part of this retirement.

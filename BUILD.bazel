@@ -58,8 +58,8 @@ vitest_bin.vitest_test(
         "README.md",
         "docs/gf-v4-qualification.candidate.yml",
         "scripts/check-invitation-authority.mjs",
+        "scripts/check-package-artifact.mjs",
         "scripts/check-release-metadata.mjs",
-        "scripts/ci-bazel-test.sh",
         ":node_modules",
         ":node_modules/vitest",
         "package.json",
@@ -86,12 +86,27 @@ js_test(
 js_test(
     name = "invitation_authority_test",
     entry_point = "scripts/check-invitation-authority.mjs",
+    include_types = True,
     data = [
         ":tinyland_auth",
         ":node_modules/typescript",
         "scripts/check-invitation-authority.mjs",
         "src/index.ts",
         "package.json",
+    ],
+)
+
+# Check the actual Bazel package directory, not a second npm/pnpm pack. Publint
+# is a locked third-party validator, never a package-provider publication lane.
+js_test(
+    name = "package_artifact_test",
+    entry_point = "scripts/check-package-artifact.mjs",
+    args = ["$(rootpath :pkg)"],
+    data = [
+        ":pkg",
+        ":node_modules/publint",
+        "package.json",
+        "scripts/check-package-artifact.mjs",
     ],
 )
 
@@ -133,4 +148,5 @@ npm_package(
     ],
     package = "@tummycrypt/tinyland-auth",
     version = "0.7.2",
+    publishable = False,
 )

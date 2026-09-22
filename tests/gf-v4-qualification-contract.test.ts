@@ -2,7 +2,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 const readText = (path: string) => readFile(path, 'utf8');
-const release = '32e39ced0008edf4564ebeb173a5e8fbf069e28f';
+const release = 'ae836d8400d5784d74af4fecc020f225d1c2d08e';
 const candidatePath = 'docs/gf-v4-qualification.candidate.yml';
 
 describe('inert GF v4 qualification source contract', () => {
@@ -13,7 +13,7 @@ describe('inert GF v4 qualification source contract', () => {
       actions: {
         'unit-tests': {
           command: 'test',
-          targets: ['//:test', '//:release_metadata_test', '//:invitation_authority_test'],
+          targets: ['//:test', '//:release_metadata_test', '//:invitation_authority_test', '//:package_artifact_test'],
           capability: 'rbe-linux-x86_64',
           result: { mode: 'status-only' },
         },
@@ -57,11 +57,11 @@ jobs:
   });
 
   it('keeps the candidate outside the active workflow directory', async () => {
-    const workflows = (await readdir('.github/workflows')).filter((name) => /\.ya?ml$/.test(name)).sort();
-    expect(workflows).toEqual(['ci.yml', 'publish.yml']);
-    for (const name of workflows) {
-      expect(await readText(`.github/workflows/${name}`)).not.toContain('spoke-ci-v4.yml');
-    }
+    const entries = await readdir('.github/workflows').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    expect(entries.filter((name) => /\.ya?ml$/.test(name))).toEqual([]);
     expect(await readText(candidatePath)).toContain('# INERT SOURCE CANDIDATE');
   });
 
@@ -74,18 +74,21 @@ jobs:
       expect(metadata).toContain(`"${input}"`);
     }
     expect(invitations).toContain('entry_point = "scripts/check-invitation-authority.mjs"');
+    expect(invitations).toContain('include_types = True');
     for (const input of [':tinyland_auth', ':node_modules/typescript', 'src/index.ts', 'package.json']) {
       expect(invitations).toContain(`"${input}"`);
     }
     expect(build).toContain('glob([".github/workflows/*.yml", ".github/workflows/*.yaml"])');
   });
 
-  it('retains the existing release gates rather than treating status as publication', async () => {
-    for (const path of ['.github/workflows/ci.yml', '.github/workflows/publish.yml']) {
-      const workflow = await readText(path);
-      expect(workflow).toContain('metadata_check_command: pnpm check:release-metadata');
-      expect(workflow).toContain('package_check_command: pnpm check:invitation-authority && pnpm check:package');
-      expect(workflow).toContain('npm_publish_mode: disabled');
-    }
+  it('retains meaningful package validation without a provider publisher', async () => {
+    const build = await readText('BUILD.bazel');
+    const artifact = build.match(/js_test\(\s*name = "package_artifact_test",([\s\S]*?)\n\)/)?.[1];
+    expect(artifact).toContain('":pkg"');
+    expect(artifact).toContain('":node_modules/publint"');
+    expect(build).toContain('scripts/check-invitation-authority.mjs');
+    expect(build).toContain('scripts/check-release-metadata.mjs');
+    const candidate = await readText(candidatePath);
+    expect(candidate).not.toMatch(/packages:\s*write|secrets:|publish_mode:|github_package_name:|npm_publish_mode:|workflow_dispatch:/);
   });
 });

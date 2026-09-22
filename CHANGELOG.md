@@ -24,6 +24,11 @@ aligned metadata do not reserve the version or authorize publication. See
 - Prepare an inert GF v4 qualification plan and real module lock, and register
   the existing release metadata and generated invitation-declaration guards as
   Bazel tests. No active v4 workflow or publication authority is added.
+- Retire npm/GitHub Packages provider workflows and the network `npx` Bazel
+  bootstrap under TIN-89. Bzlmod/BCR is the sole first-party delivery authority;
+  the manifest is non-publishable and the breaking auth 0.8 train remains held.
+  Preserve validation with real declaration runfiles and a Bazel package
+  artifact/publint test; GF qualification remains inert pending admission.
 
 ## 0.7.1
 

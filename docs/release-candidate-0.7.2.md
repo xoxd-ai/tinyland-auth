@@ -48,8 +48,10 @@ The proposed patch candidate is 0.7.2, not a reservation of the number.
   and one cooperating application process. Filesystems that refuse them fail
   closed. No cross-process lock, multi-replica CAS or storage-loss guarantee is
   provided; the coordinator's mutex is process-local.
-- No dependency pins, package scope, active workflows or consumer pins change
-  in this metadata preparation. No old held-PR implementation is incorporated.
+- The original metadata preparation changed no dependency pins, package scope,
+  workflows or consumer pins. The later TIN-89 retirement below removes
+  provider workflows without activating a replacement; no old held-PR
+  implementation is incorporated.
 
 Deferred work remains deferred: immutable first-super-admin bootstrap receipts,
 PG/Redis adapter convergence, versioned RBAC and principal-bound invitation
@@ -62,16 +64,34 @@ guarantees or migrate every consumer's invitation TOTP custody.
 Read-only checks on 2026-09-20 found no v0.7.2 GitHub tag or release in
 `xoxd-ai/tinyland-auth`, and no 0.7.2 directory or metadata entry under active
 `bazel-registry/modules/tummycrypt_tinyland_auth`. Published/tag/BCR maximum
-remains 0.7.1. GitHub Packages occupancy is **unverified**: the available read
-credential lacks `read:packages`. Recheck every distribution authority at the
-actual release boundary; this source version is not globally reserved.
+was 0.7.1 at that observation. Recheck source tags/releases and active BCR at the
+actual release boundary; this source version is not reserved.
 
-The existing auth CI can publish on a version-tag push; its publish workflow
-also handles published GitHub Releases. Neither event is a harmless metadata
-operation. Both still require their existing release gates. The configured
-GitHub Packages destination remains `@tinyland-inc/tinyland-auth`; the renamed
-owner/destination and installed App authority need release-owner reconciliation.
-npmjs remains disabled. This candidate changes none of those workflows.
+TIN-1629's 2026-08-27 ruling supersedes the interim GitHub Packages route:
+Bzlmod plus the append-only Tinyland BCR is the sole first-party delivery
+authority. GitHub source tags/releases identify source; neither npmjs nor
+GitHub Packages is a delivery or fallback lane. Provider-registry credentials,
+scope renames and version occupancy are therefore not release prerequisites.
+Do not repair those credentials or rewrite historical provider artifacts.
+
+The 2026-09-21 TIN-89 source correction deletes the legacy `ci.yml` and
+`publish.yml`, including tag/manual/release provider publication triggers,
+provider inputs, inherited secrets and package-write permissions. It also
+removes `prepublishOnly`, `test:bazel`, and the `npx` Bazel bootstrap script.
+`private: true` and explicit `npm_package(publishable = False)` block package
+provider publication while preserving the Bazel package/import surface.
+No replacement workflow is activated: the existing GF caller remains under
+`docs/` until its exact released/admitted contract is reviewed. This state is
+an inactive qualification path, not a green check or permission to merge.
+
+Current-main reconciliation: remote auth main
+`1a61fcc38bd0a2589f518a180a2f09481d743f67` already merged
+[#59](https://github.com/xoxd-ai/tinyland-auth/pull/59) under the 2026-09-21 GP2
+ruling. That narrower change removes the GitHub Packages input and updates its
+test after the CT1 template-owner repin. This source retirement preserves GP2's
+intent by removing the remaining pair entirely, not restoring either provider
+lane. Reconcile those three overlapping files during integration; no remote
+history or active default branch was changed by this local preparation.
 
 BCR promotion is a separate reviewed registry change: add a new immutable
 version directory containing the actual source archive/SRI and module metadata,
@@ -104,11 +124,22 @@ Bazel build/test or proof of Linux remote closure. Runtime suites, compiler
 outputs and package artifact checks were not repeated in this metadata pass.
 
 The inert qualification plan declares `test //:test //:release_metadata_test
-//:invitation_authority_test` and `build //:pkg //:typecheck`. Its released
+//:invitation_authority_test //:package_artifact_test` and
+`build //:pkg //:typecheck`. Its released
 schema validation, provider installation, admission, remote execution receipts
 and activation remain the separate gates documented in GF preparation. The
 generated-declaration invitation guard requires real compiler output; a source
-metadata check cannot replace it. Existing `publint`, artifact qualification,
-tag/version checks, collision checks, release authorization and BCR promotion
-also remain required. Status-only qualification does not export an artifact or
-authorize publication.
+metadata check cannot replace it. The declaration guard explicitly includes
+the compiler's type outputs in its Bazel runfiles. The new package-artifact
+test reads the actual `//:pkg` directory, checks version/export/dependency/file
+parity, and invokes the locked publint with `pack: false`; it never launches a
+second npm/pnpm pack. Tag/version checks, source/BCR collision checks, exact
+archive/SRI evidence, release authorization and BCR promotion remain required.
+Status-only qualification does not export an artifact or authorize publication.
+
+The earlier diagnostics above predate this CI-retirement diff. No local build,
+test, Bazel or Nix execution was performed for the 2026-09-21 correction. The
+changed graph tests, artifact output and source-bound module lock still need
+qualified validation. Bazel uses its existing TypeScript 5.9.3 pin; the removed
+legacy workflow's separate TypeScript 6.0.3 task is not claimed as retained
+remote evidence. No dependency/toolchain pin was changed to disguise that gap.

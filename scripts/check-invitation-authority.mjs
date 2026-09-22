@@ -15,7 +15,8 @@ import ts from 'typescript';
 // dist/index.d.ts is caught too, and it verifies the retained type-only
 // compatibility exports remain present.
 //
-// Run after `pnpm build` so dist/index.d.ts exists.
+// Bazel //:invitation_authority_test supplies the actual :tinyland_auth output,
+// including dist/index.d.ts. A source-only check is not a replacement.
 
 const surfaces = ['src/index.ts', 'dist/index.d.ts'];
 const retainedCompatibilityTypes = [
@@ -105,7 +106,7 @@ async function readSurface(surface) {
   }
   if (surface.startsWith('dist/')) {
     throw new Error(
-      `${surface} not found — run \`pnpm build\` before the invitation-authority guard`,
+      `${surface} not found — the Bazel invitation_authority_test requires generated :tinyland_auth declarations`,
     );
   }
   throw new Error(`${surface} not found`);

@@ -34,20 +34,18 @@ The package declares these engines and peer deps:
 - `@sveltejs/kit` `^2.0.0` (peer, optional)
 - `svelte` `^5.0.0` (peer, optional)
 
-A default `npm create svelte@latest` (SvelteKit 2 + Svelte 5) app satisfies
-this.
+A SvelteKit 2 + Svelte 5 consumer must resolve those versions through its
+reviewed build graph and use its repo-managed entrypoints.
 
 ### A note on install authority
 
-Per the package README, Tinyland's current release authority for this repo is
-Bazel-first, and npmjs publication is disabled. `pnpm add
-@tummycrypt/tinyland-auth` is valid only against a registry configured to serve
-the `@tummycrypt` scope; Bazel consumers should depend through the Tinyland
-Bazel registry / BCR module path (`tummycrypt_tinyland_auth`) instead of a
-workspace-local copy. This guide shows the import surface; how you make that
-surface resolvable (registry npm, Bazel module graph, or vendored copy) is your
-build's decision. The TypeScript import specifier is always
-`@tummycrypt/tinyland-auth`.
+TIN-89/TIN-1629 supersede the earlier package-provider advice: Bzlmod plus the
+append-only Tinyland BCR is the sole first-party delivery authority. Resolve
+`tummycrypt_tinyland_auth` through `bazel_dep` and link its `//:pkg` with
+`npm_link_package`. Neither npmjs nor GitHub Packages is a delivery/fallback
+lane; a vendored copy is not package authority. This guide retains its exact
+0.7.1 API examples, not the retired installation topology. The TypeScript
+import specifier remains `@tummycrypt/tinyland-auth`.
 
 ## 1. Required env and secrets
 

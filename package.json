@@ -1,6 +1,7 @@
 {
   "name": "@tummycrypt/tinyland-auth",
   "version": "0.7.2",
+  "private": true,
   "packageManager": "pnpm@10.13.1",
   "description": "Production-grade authentication system with TOTP, RBAC, and pluggable storage",
   "type": "module",
@@ -55,10 +56,8 @@
     "check:release-metadata": "node scripts/check-release-metadata.mjs",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
-    "check:package": "publint",
-    "prepublishOnly": "pnpm build && pnpm check:invitation-authority && pnpm check:package",
+    "check:package": "node scripts/check-package-artifact.mjs bazel-bin/pkg",
     "test": "vitest run",
-    "test:bazel": "bash scripts/ci-bazel-test.sh",
     "test:coverage": "vitest --coverage",
     "typecheck": "tsc --noEmit"
   },

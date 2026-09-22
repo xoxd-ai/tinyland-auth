@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 const readText = (path: string) => readFile(path, 'utf8');
@@ -36,44 +36,41 @@ describe('package release authority', () => {
     const packageJson = JSON.parse(await readText('package.json')) as {
       name?: string;
       publishConfig?: unknown;
+      private?: boolean;
     };
     const buildBazel = await readText('BUILD.bazel');
 
     expect(packageJson.name).toBe('@tummycrypt/tinyland-auth');
     expect(packageJson.publishConfig).toBeUndefined();
+    expect(packageJson.private).toBe(true);
     expect(buildBazel).toContain('package = "@tummycrypt/tinyland-auth"');
+    expect(buildBazel).toContain('publishable = False');
   });
 
-  it('keeps npmjs publication disabled in package workflows', async () => {
-    const workflowPaths = ['.github/workflows/ci.yml', '.github/workflows/publish.yml'];
-
-    for (const workflowPath of workflowPaths) {
-      const workflow = await readText(workflowPath);
-
-      expect(workflow).toContain('runner_mode: repo_owned');
-      expect(workflow).toContain('runner_labels_json: ${{ vars.PRIMARY_LINUX_RUNNER_LABELS_JSON }}');
-      expect(workflow).toContain('metadata_check_command: pnpm check:release-metadata');
-      expect(workflow).toContain('unit_test_command: pnpm test && pnpm test:bazel');
-      expect(workflow).toContain(
-        'package_check_command: pnpm check:invitation-authority && pnpm check:package',
-      );
-      expect(workflow).toContain('bazel_targets: "//:pkg //:test //:typecheck"');
-      expect(workflow).toContain('npm_publish_mode: disabled');
-      expect(workflow).toContain('github_package_name: "@tinyland-inc/tinyland-auth"');
+  it('retires provider workflows without silently activating an unadmitted replacement', async () => {
+    const workflows = await readdir('.github/workflows').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    expect(workflows.filter(name => /\.ya?ml$/.test(name))).toEqual([]);
+    const packageJson = JSON.parse(await readText('package.json'));
+    expect(packageJson.publishConfig).toBeUndefined();
+    for (const hook of ['prepublish', 'prepublishOnly', 'publish', 'postpublish', 'test:bazel']) {
+      expect(packageJson.scripts[hook]).toBeUndefined();
     }
+    expect(JSON.stringify(packageJson.scripts)).not.toMatch(/\bnpx\b|\b(?:npm|pnpm)\s+publish\b/);
   });
 
   it('executes the Bazel test target instead of only building it', async () => {
-    const packageJson = JSON.parse(await readText('package.json')) as {
-      scripts?: Record<string, string>;
-    };
-    const bazelTestScript = await readText('scripts/ci-bazel-test.sh');
-
-    expect(packageJson.scripts?.['test:bazel']).toBe('bash scripts/ci-bazel-test.sh');
-    expect(bazelTestScript).toContain(
-      'npx --yes @bazel/bazelisk test //:test //:typecheck --test_output=errors',
-    );
-    expect(bazelTestScript).not.toMatch(/@bazel\/bazelisk build\b/);
+    const plan = JSON.parse(await readText('.github/lanes.json'));
+    expect(plan.actions['unit-tests'].command).toBe('test');
+    expect(plan.actions['unit-tests'].targets).toEqual([
+      '//:test', '//:release_metadata_test', '//:invitation_authority_test', '//:package_artifact_test',
+    ]);
+    expect(plan.actions['package-check'].command).toBe('build');
+    expect(plan.actions['package-check'].targets).toEqual(['//:pkg', '//:typecheck']);
+    const build = await readText('BUILD.bazel');
+    expect(build).not.toContain('scripts/ci-bazel-test.sh');
   });
 
   it('checks release metadata before package validation and publication', async () => {
@@ -106,16 +103,41 @@ describe('package release authority', () => {
     expect(packageJson.version).toBe(moduleVersion);
   });
 
-  it('documents Bazel-first release authority for consumers', async () => {
+  it('checks the actual Bazel package without provider packing or publication', async () => {
+    const build = await readText('BUILD.bazel');
+    const artifact = build.match(/js_test\(\s*name = "package_artifact_test",([\s\S]*?)\n\)/)?.[1];
+    expect(artifact).toContain('entry_point = "scripts/check-package-artifact.mjs"');
+    expect(artifact).toContain('args = ["$(rootpath :pkg)"]');
+    for (const input of [':pkg', ':node_modules/publint', 'package.json']) {
+      expect(artifact).toContain(`"${input}"`);
+    }
+    const guard = await readText('scripts/check-package-artifact.mjs');
+    expect(guard).toContain('publint({ pkgDir: packageDirectory, pack: false })');
+    expect(guard).toContain('assert.deepEqual(artifact.exports, source.exports');
+    expect(guard).toContain("message.type === 'error'");
+    expect(guard).not.toMatch(/(?:spawn|execFile|execSync)\s*\(/);
+  });
+
+  it('keeps first-party dependencies out of the package-manager graph', async () => {
+    const packageJson = JSON.parse(await readText('package.json'));
+    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+      expect(Object.keys(packageJson[field] ?? {}).filter(name => /^@(tummycrypt|tinyland|tinyland-inc|xoxd-ai)\//.test(name))).toEqual([]);
+    }
+    const module = await readText('MODULE.bazel');
+    expect(module).toContain('name = "tummycrypt_tinyland_auth_npm"');
+    expect(module).toContain('pnpm_lock = "//:pnpm-lock.yaml"');
+    expect(module).not.toContain('WORKSPACE');
+  });
+
+  it('documents BCR-only delivery without claiming pending GF admission', async () => {
     const readme = await readText('README.md');
     const mvpDoc = await readText('docs/tinyland-databaseless-auth-mvp.md');
 
-    expect(readme).toContain('npmjs publication is disabled');
-    expect(readme).toContain('GitHub Packages mirror');
-    expect(readme).toContain('Tinyland Bazel registry');
-    expect(readme).toContain('repo-owned GloriousFlywheel runner lane');
-    expect(mvpDoc).toContain('`//:pkg //:test //:typecheck`');
-    expect(mvpDoc).toContain('repo-owned GloriousFlywheel runner lane');
-    expect(normalizeWhitespace(mvpDoc)).toContain('npmjs publication is disabled');
+    for (const document of [readme, mvpDoc]) {
+      expect(normalizeWhitespace(document)).toContain('Bzlmod plus the append-only Tinyland BCR is the sole first-party delivery authority');
+      expect(normalizeWhitespace(document)).toContain('neither npmjs nor GitHub Packages is a delivery or fallback lane');
+      expect(document).toContain('inert');
+      expect(document).not.toContain('GitHub Packages mirror');
+    }
   });
 });
