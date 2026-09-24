@@ -7,9 +7,10 @@
 
 
 
-import { promises as fs } from 'fs';
+import { constants, promises as fs } from 'fs';
 import path from 'path';
 import { randomBytes, randomUUID } from 'crypto';
+import { totpRetirementFactorSnapshotDigest, totpRetirementRecoverySetDigest } from './totp-retirement-material.js';
 import type { BoundedSessionPolicy } from '../types/config.js';
 import { assertBoundedSessionPolicy, assertStoredSessions, boundedSessions } from './session-policy.js';
 import type { IStorageAdapter, StorageAdapterConfig, AuditEventFilters } from './interface.js';
@@ -463,6 +464,94 @@ export class FileStorageAdapter implements IStorageAdapter {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Additive retirement capability; legacy generic adapter API remains unchanged.
+   * Caller must hold the shared exclusive auth gate. Credential directories and
+   * their ancestors must be operator-owned with no independent writer. The path
+   * checks detect unsafe existing state; they are not an atomic defense against
+   * out-of-gate directory/file swaps between lstat, open and unlink.
+   */
+  async deleteTOTPSecretExpected(handle: string, expectedDigest: string): Promise<void> {
+    this.retirementComponent(handle);
+    if (!/^[a-f0-9]{64}$/.test(expectedDigest)) throw new Error('Invalid retirement material');
+    await this.deleteCredentialExpected(this.getTotpPath(handle), expectedDigest, value => {
+      if (!isStoredFactor(value, handle)) throw new Error('Invalid retirement material');
+      return totpRetirementFactorSnapshotDigest(value);
+    });
+  }
+
+  async deleteBackupCodesExpected(userId: string, expectedDigest: string | null): Promise<void> {
+    this.retirementComponent(userId);
+    if (expectedDigest !== null && !/^[a-f0-9]{64}$/.test(expectedDigest)) throw new Error('Invalid retirement material');
+    await this.deleteCredentialExpected(this.getBackupCodesPath(userId), expectedDigest, value => {
+      if (!isStoredBackupCodes(value, userId)) throw new Error('Invalid retirement material');
+      return totpRetirementRecoverySetDigest(value)!;
+    });
+  }
+
+  /** Same exclusive-gate/operator-owned-storage precondition as expected deletion; not cross-process CAS. */
+  async clearTotpFlagsExpected(userId: string, handle: string): Promise<void> {
+    this.retirementComponent(userId); this.retirementComponent(handle);
+    const matches = (await this.getAllUsers()).filter(user => user.id === userId || user.handle === handle);
+    if (matches.length !== 1 || matches[0].id !== userId || matches[0].handle !== handle ||
+        !((matches[0].totpEnabled === true && matches[0].totpSecretId === handle) ||
+          (matches[0].totpEnabled === false && !matches[0].totpSecretId))) throw new Error('Retirement owner changed');
+    // updateUser's JSON replacement omits undefined; don't recreate the account or alter grants.
+    await this.updateUser(userId, { totpEnabled: false, totpSecretId: undefined });
+    const current = await this.getUser(userId);
+    if (!current || current.handle !== handle || current.totpEnabled !== false || current.totpSecretId) throw new Error('Retirement flags unavailable');
+  }
+
+  private retirementComponent(value: string): void {
+    if (typeof value !== 'string' || value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error('Invalid retirement identity');
+  }
+
+  private async deleteCredentialExpected(filename: string, expected: string | null, digest: (value: unknown) => string): Promise<void> {
+    try {
+      const absolute = path.resolve(filename);
+      const parent = path.dirname(absolute);
+      // Validate each ancestor before following it, including missing-child replay.
+      let ancestor = path.parse(parent).root;
+      for (const part of path.relative(ancestor, parent).split(path.sep).filter(Boolean)) {
+        const next = path.join(ancestor, part);
+        let state;
+        try { state = await fs.lstat(next); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          const existing = await fs.open(ancestor, 'r');
+          try { await existing.sync(); } finally { await existing.close(); }
+          return;
+        }
+        if (!state.isDirectory() || state.isSymbolicLink()) throw new Error('Untrusted credential directory');
+        ancestor = next;
+      }
+      const directory = await fs.open(parent, 'r');
+      try {
+        let file;
+        try { file = await fs.open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          // A previous unlink may have happened before its directory fsync failed.
+          await directory.sync();
+          return;
+        }
+        try {
+          const state = await file.stat();
+          if (!state.isFile() || state.nlink !== 1 || state.size <= 0 || state.size > 256 * 1024) throw new Error('Invalid credential file');
+          const raw = await file.readFile('utf8');
+          if (Buffer.byteLength(raw) > 256 * 1024 || expected === null || digest(JSON.parse(raw)) !== expected) throw new Error('Retirement material changed');
+          const current = await fs.lstat(absolute);
+          if (!current.isFile() || current.nlink !== 1 || current.dev !== state.dev || current.ino !== state.ino ||
+              current.size !== state.size || current.mtimeMs !== state.mtimeMs || current.ctimeMs !== state.ctimeMs) throw new Error('Retirement material changed');
+          await fs.unlink(absolute);
+        } finally { await file.close(); }
+        await directory.sync();
+        try { await fs.lstat(absolute); throw new Error('Credential still present'); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      } finally { await directory.close(); }
+    } catch { throw new Error('Durable credential retirement unavailable'); }
   }
 
   
