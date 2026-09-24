@@ -11,6 +11,8 @@ import {
   type TotpEnrollmentCompletion,
   type TotpEnrollmentCurrentState,
   type TotpEnrollmentSetup,
+  type TotpEnrollmentRequest,
+  type PrimaryReauthAuthorization,
 } from '../src/storage/file-totp-enrollment.js';
 import type { AdminUser, EncryptedData, TOTPSecret } from '../src/types/auth.js';
 
@@ -153,12 +155,312 @@ function expectNoPlaintext(raw: string, setup: TotpEnrollmentSetup, binding: Tot
   for (const code of setup.backupCodes) expect(raw).not.toContain(code);
 }
 
+async function selfFixture() {
+  const f = await fixture();
+  f.state.user!.needsOnboarding = false;
+  f.state.user!.firstLogin = false;
+  f.state.session!.user!.needsOnboarding = false;
+  const binding: TotpEnrollmentRequest = {
+    ...f.binding, mode: 'self-enrollment', primaryReauthRef: 'opaque-server-held-primary-proof',
+  };
+  const authorization: PrimaryReauthAuthorization = {
+    userId: binding.userId, sessionId: binding.sessionId, purpose: 'totp.enroll', method: 'password',
+    issuedAt: new Date(START).toISOString(), expiresAt: new Date(START + 60_000).toISOString(),
+  };
+  const verifiedPasswordHash = f.state.user!.passwordHash;
+  const resolver = vi.fn(async (input: Parameters<NonNullable<FileTotpEnrollmentConfig['validatePrimaryReauthentication']>>[0]) => {
+    if (input.reference !== binding.primaryReauthRef || input.currentUser.passwordHash !== verifiedPasswordHash) return null;
+    return copy(authorization);
+  });
+  const fresh = (overrides: Partial<FileTotpEnrollmentConfig> = {}) => f.fresh({ validatePrimaryReauthentication: resolver, ...overrides });
+  const coordinator = fresh();
+  return {
+    ...f, binding, authorization, resolver, coordinator, fresh,
+    begin: () => coordinator.begin(binding),
+    complete: (setup: TotpEnrollmentSetup) => coordinator.complete({ ...binding, attemptId: setup.attemptId, token: TOKEN }),
+  };
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   // Only exact directories returned by this test's mkdtemp are removed.
   for (const directory of ownedDirectories.splice(0)) {
     await fs.rm(directory, { recursive: true, force: true });
   }
+});
+
+describe('FileTotpEnrollmentCoordinator self-enrollment v2', () => {
+  it('requires a configured server-proof resolver and never treats the opaque reference as authorization', async () => {
+    const f = await selfFixture();
+    await expect(f.fresh({ validatePrimaryReauthentication: undefined }).begin(f.binding)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(f.coordinator.begin({ ...f.binding, primaryReauthRef: 'browser-invented-proof' })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    f.resolver.mockRejectedValueOnce(new Error('private resolver details'));
+    await expect(f.begin()).rejects.toMatchObject({ code: 'UNAUTHORIZED', message: 'Current primary reauthentication is required' });
+    expect(f.totp.generateSecret).not.toHaveBeenCalled();
+    expect(f.project).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['owner', { userId: 'another-user' }],
+    ['session', { sessionId: 'another-session' }],
+    ['purpose', { purpose: 'account.link' }],
+    ['method', { method: 'browser-cookie' }],
+    ['future issuance', { issuedAt: new Date(START + 1).toISOString() }],
+    ['expired', { expiresAt: new Date(START).toISOString() }],
+    ['overlong TTL', { expiresAt: new Date(START + 300_001).toISOString() }],
+    ['malformed timestamp', { issuedAt: 'not-time' }],
+  ])('denies invalid primary proof %s before creating pending material', async (_label, patch) => {
+    const f = await selfFixture();
+    Object.assign(f.authorization, patch);
+    await expect(f.begin()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(f.totp.generateSecret).not.toHaveBeenCalled();
+    expect(f.project).not.toHaveBeenCalled();
+  });
+
+  it('binds pending material to the same proof without writing its reference, session bearer or password hash', async () => {
+    const f = await selfFixture();
+    const setup = await f.begin();
+    const raw = await fs.readFile(f.filename, 'utf8');
+    expectNoPlaintext(raw, setup, f.binding);
+    expect(raw).not.toContain(f.binding.primaryReauthRef!);
+    expect(raw).not.toContain(f.state.user!.passwordHash);
+    expect(await f.readRecord()).toMatchObject({ version: 2, mode: 'self-enrollment', state: 'pending' });
+    expect(await f.fresh().begin(f.binding)).toEqual(setup);
+    f.resolver.mockImplementation(async () => copy(f.authorization));
+    await expect(f.coordinator.begin({ ...f.binding, mode: 'self-enrollment', primaryReauthRef: 'different-validated-proof' }))
+      .rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
+
+  it('completes with only the two factor fields and leaves profile, onboarding, grants and sessions unchanged', async () => {
+    const f = await selfFixture();
+    const original = copy(f.state.user!);
+    const session = copy(f.state.session);
+    const setup = await f.begin();
+    const receipt = await f.complete(setup);
+    expect(receipt).toMatchObject({ version: 2, mode: 'self-enrollment', attemptId: setup.attemptId });
+    expect(f.project.mock.calls[0][0].userPatch).toEqual({ totpEnabled: true, totpSecretId: original.handle });
+    expect(f.state.user).toEqual({ ...original, totpEnabled: true, totpSecretId: original.handle });
+    expect(f.state.session).toEqual(session);
+    const applied = await f.readRecord();
+    expect(Object.keys(applied).sort()).toEqual(['mode', 'primaryReauthUses', 'receipt', 'sessionDigest', 'state', 'version']);
+    expect(JSON.stringify(receipt)).not.toContain(setup.secret);
+    for (const code of setup.backupCodes) expect(JSON.stringify(receipt)).not.toContain(code);
+  });
+
+  it('accepts current server-verified GitHub reauthentication and rejects provider identity changes', async () => {
+    const f = await selfFixture();
+    f.authorization.method = 'github';
+    f.state.user!.githubId = 42;
+    f.resolver.mockImplementation(async ({ reference, currentUser }) =>
+      reference === f.binding.primaryReauthRef && currentUser.githubId === 42 ? copy(f.authorization) : null);
+    const setup = await f.begin();
+    f.state.user!.githubId = 43;
+    await expect(f.complete(setup)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(f.totp.verifyTokenWithStep).not.toHaveBeenCalled();
+    f.state.user!.githubId = 42;
+    await expect(f.complete(setup)).resolves.toMatchObject({ version: 2, mode: 'self-enrollment' });
+  });
+
+  it('checks primary credential freshness again after asynchronous resolver, QR and factor verification work', async () => {
+    const resolverRace = await selfFixture();
+    resolverRace.resolver.mockImplementationOnce(async () => {
+      resolverRace.state.user!.passwordHash = 'changed-after-validation-start';
+      return copy(resolverRace.authorization);
+    });
+    await expect(resolverRace.begin()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    const qrRace = await selfFixture();
+    qrRace.totp.generateQRCode.mockImplementationOnce(async () => {
+      qrRace.state.session = null;
+      return 'data:fixture-qr';
+    });
+    await expect(qrRace.begin()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    const factorRace = await selfFixture();
+    const setup = await factorRace.begin();
+    factorRace.totp.verifyTokenWithStep.mockImplementationOnce(async () => {
+      factorRace.state.user!.passwordHash = 'reset-between-factors';
+      return { valid: true, step: VERIFIED_STEP };
+    });
+    await expect(factorRace.complete(setup)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(factorRace.project).not.toHaveBeenCalled();
+    expect((await factorRace.readRecord()).state).toBe('pending');
+  });
+
+  it('denies a changed current credential before factor verification and expires at the proof deadline', async () => {
+    const f = await selfFixture();
+    const setup = await f.begin();
+    f.state.user!.passwordHash = 'changed-current-credential';
+    await expect(f.complete(setup)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(f.totp.verifyTokenWithStep).not.toHaveBeenCalled();
+    const expired = await selfFixture();
+    const expiredSetup = await expired.begin();
+    expired.setTime(Date.parse(expired.authorization.expiresAt));
+    await expect(expired.complete(expiredSetup)).rejects.toMatchObject({ code: 'EXPIRED' });
+    expect(expired.project).not.toHaveBeenCalled();
+  });
+
+  it('does not disclose setup after primary proof expiry during pending publication', async () => {
+    const f = await selfFixture();
+    const nativeRename = fs.rename.bind(fs);
+    vi.spyOn(fs, 'rename').mockImplementationOnce(async (from, to) => {
+      await nativeRename(from, to);
+      f.setTime(Date.parse(f.authorization.expiresAt));
+    });
+    await expect(f.begin()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect((await f.readRecord()).state).toBe('pending');
+    expect(f.project).not.toHaveBeenCalled();
+  });
+
+  it('finishes a committed projection but refuses UI success if the session expires while applying it', async () => {
+    const f = await selfFixture();
+    const setup = await f.begin();
+    f.project.mockImplementationOnce(async (completion) => {
+      await f.applyProjection(completion);
+      f.state.session!.expires = new Date(START).toISOString();
+    });
+    await expect(f.complete(setup)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect((await f.readRecord()).state).toBe('applied');
+    expect(f.state.user!.totpEnabled).toBe(true);
+  });
+
+  it.each(['onboarding user', 'restricted session', 'existing factor', 'existing backup codes', 'removed user', 'revoked session'])('denies %s', async (caseName) => {
+    const f = await selfFixture();
+    if (caseName === 'onboarding user') f.state.user!.needsOnboarding = true;
+    if (caseName === 'restricted session') f.state.session!.user!.needsOnboarding = true;
+    if (caseName === 'existing factor') f.state.totpSecret = {} as NonNullable<TotpEnrollmentCurrentState['totpSecret']>;
+    if (caseName === 'existing backup codes') f.state.backupCodes = { userId: f.binding.userId, codes: [], generatedAt: new Date(START).toISOString() };
+    if (caseName === 'removed user') Object.assign(f.state.user!, { removedAt: null });
+    if (caseName === 'revoked session') f.state.session = null;
+    await expect(f.begin()).rejects.toBeDefined();
+    expect(f.totp.generateSecret).not.toHaveBeenCalled();
+    expect(f.project).not.toHaveBeenCalled();
+  });
+
+  it('does not transfer an attempt between onboarding and self-enrollment modes', async () => {
+    const f = await selfFixture();
+    const setup = await f.begin();
+    f.state.user!.needsOnboarding = true;
+    f.state.session!.user!.needsOnboarding = true;
+    const onboarding = { userId: f.binding.userId, sessionId: f.binding.sessionId };
+    await expect(f.coordinator.complete({ ...onboarding, attemptId: setup.attemptId, token: TOKEN })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(f.coordinator.begin(onboarding)).rejects.toMatchObject({ code: 'CONFLICT' });
+    const legacy = await fixture();
+    const legacySetup = await legacy.coordinator.begin(legacy.binding);
+    legacy.state.user!.needsOnboarding = false;
+    legacy.state.session!.user!.needsOnboarding = false;
+    await expect(legacy.coordinator.complete({ ...legacy.binding, mode: 'self-enrollment', primaryReauthRef: 'opaque', attemptId: legacySetup.attemptId, token: TOKEN }))
+      .rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('replays a committed v2 operation after proof expiry and session revocation, but does not return unauthenticated UI success', async () => {
+    const f = await selfFixture();
+    const setup = await f.begin();
+    f.project.mockImplementationOnce(async (completion) => {
+      f.state.totpSecret = copy(completion.totpSecret);
+      throw new Error('fixture interrupted projection');
+    });
+    await expect(f.complete(setup)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    const committed = await f.readRecord<{ completion: TotpEnrollmentCompletion }>();
+    f.state.session = null;
+    f.setTime(Date.parse(f.authorization.expiresAt) + 1);
+    const noProof = f.fresh({ validatePrimaryReauthentication: undefined });
+    await expect(noProof.complete({ ...f.binding, attemptId: setup.attemptId, token: TOKEN })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect((await f.readRecord()).state).toBe('applied');
+    expect(f.project.mock.calls[1][0]).toEqual(committed.completion);
+    expect(f.state.user!.needsOnboarding).toBe(false);
+    expect(f.state.backupCodes).toEqual(committed.completion.backupCodes);
+    expect(f.totp.verifyTokenWithStep).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns only an idempotent receipt to the same current owner/session after proof expiry without replaying spent material', async () => {
+    const f = await selfFixture();
+    const setup = await f.begin();
+    const receipt = await f.complete(setup);
+    f.state.backupCodes!.codes[0].used = true;
+    f.setTime(Date.parse(f.authorization.expiresAt) + 1);
+    await expect(f.fresh({ validatePrimaryReauthentication: undefined }).complete({ ...f.binding, attemptId: setup.attemptId, token: TOKEN })).resolves.toEqual(receipt);
+    expect(f.state.backupCodes!.codes[0].used).toBe(true);
+    expect(f.project).toHaveBeenCalledTimes(1);
+    f.state.session!.id = 'different-session';
+    await expect(f.fresh().complete({ ...f.binding, sessionId: 'different-session', attemptId: setup.attemptId, token: TOKEN })).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('keeps recovery closed if the projection detects a conflicting factor', async () => {
+    const f = await selfFixture();
+    const setup = await f.begin();
+    f.project.mockRejectedValue(new Error('existing factor conflicts with committed material'));
+    await expect(f.complete(setup)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    const protectedRead = vi.fn(async () => 'must not run');
+    await expect(f.fresh().withReadyAuth(protectedRead)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    expect(protectedRead).not.toHaveBeenCalled();
+    expect((await f.readRecord()).state).toBe('committed');
+  });
+
+  it('binds a primary ref once even when pending enrollment expires before the primary proof', async () => {
+    const f = await selfFixture();
+    const coordinator = f.fresh({ ttlMs: 10_000 });
+    const setup = await coordinator.begin(f.binding);
+    f.setTime(START + 10_001);
+    await expect(coordinator.begin(f.binding)).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect((await f.readRecord()).attemptId).toBe(setup.attemptId);
+    // A different independently validated proof can replace expired pending
+    // material, but its publication must retain the still-live earlier use.
+    f.resolver.mockImplementation(async () => copy(f.authorization));
+    const replacementBinding = { ...f.binding, mode: 'self-enrollment' as const, primaryReauthRef: 'second-server-proof' };
+    const replacement = await coordinator.begin(replacementBinding);
+    expect(replacement.attemptId).not.toBe(setup.attemptId);
+    expect((await f.readRecord<{ primaryReauthUses: unknown[] }>()).primaryReauthUses).toHaveLength(2);
+    f.setTime(START + 20_002);
+    await expect(coordinator.begin(f.binding)).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('does not reuse a committed primary proof after out-of-band factor removal', async () => {
+    const f = await selfFixture();
+    const setup = await f.begin();
+    await f.complete(setup);
+    f.state.totpSecret = null;
+    f.state.backupCodes = null;
+    f.state.user!.totpEnabled = false;
+    delete f.state.user!.totpSecretId;
+    await expect(f.fresh().begin(f.binding)).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(f.project).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves v1 pending bytes and the original v1 material digest without adding mode fields', async () => {
+    const f = await fixture();
+    const setup = await f.coordinator.begin(f.binding);
+    const pendingBytes = await fs.readFile(f.filename, 'utf8');
+    await f.fresh().recover();
+    expect(await fs.readFile(f.filename, 'utf8')).toBe(pendingBytes);
+    const receipt = await f.complete(setup);
+    const material = f.project.mock.calls[0][0];
+    function legacyCanonical(value: unknown): string {
+      if (Array.isArray(value)) return `[${value.map(legacyCanonical).join(',')}]`;
+      if (value !== null && typeof value === 'object') {
+        const record = value as Record<string, unknown>;
+        return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${legacyCanonical(record[key])}`).join(',')}}`;
+      }
+      return JSON.stringify(value);
+    }
+    const expected = createHash('sha256').update('tinyland-auth:totp-enrollment:v1\0').update(legacyCanonical(material)).digest('hex');
+    expect(receipt.materialDigest).toBe(expected);
+    expect(receipt.version).toBe(1);
+    expect(material).not.toHaveProperty('mode');
+    expect(Object.keys(await f.readRecord()).sort()).toEqual(['receipt', 'sessionDigest', 'state', 'version']);
+  });
+
+  it.each(['v2 onboarding mode', 'missing mode', 'extra onboarding patch'])('rejects mode/schema confusion: %s', async (damage) => {
+    const f = await selfFixture();
+    const setup = await f.begin();
+    f.project.mockRejectedValueOnce(new Error('fixture interrupted'));
+    await expect(f.complete(setup)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    const record = await f.readRecord<Record<string, any>>();
+    if (damage === 'v2 onboarding mode') record.mode = 'onboarding';
+    if (damage === 'missing mode') delete record.mode;
+    if (damage === 'extra onboarding patch') record.completion.userPatch.needsOnboarding = true;
+    await f.writeRecord(record);
+    await expect(f.fresh().recover()).rejects.toMatchObject({ code: 'INVALID' });
+    expect(f.project).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('FileTotpEnrollmentCoordinator pending custody', () => {

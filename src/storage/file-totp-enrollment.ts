@@ -12,6 +12,22 @@ export interface TotpEnrollmentBinding {
   sessionId: string;
 }
 
+export type TotpEnrollmentMode = 'onboarding' | 'self-enrollment';
+export type TotpEnrollmentRequest = TotpEnrollmentBinding & (
+  | { mode?: 'onboarding'; primaryReauthRef?: never }
+  | { mode: 'self-enrollment'; primaryReauthRef: string }
+);
+
+/** Server-validated claims, never a browser-supplied authorization object. */
+export interface PrimaryReauthAuthorization {
+  userId: string;
+  sessionId: string;
+  purpose: 'totp.enroll';
+  method: 'password' | 'github';
+  issuedAt: string;
+  expiresAt: string;
+}
+
 export interface TotpEnrollmentCurrentState {
   user: AdminUser | null;
   session: Session | null;
@@ -36,8 +52,7 @@ export interface TotpEnrollmentUserPatch {
 }
 
 /** Frozen projection input. It deliberately cannot activate a user or change a role. */
-export interface TotpEnrollmentCompletion {
-  version: 1;
+interface EnrollmentCompletionMaterial {
   attemptId: string;
   userId: string;
   handle: string;
@@ -45,17 +60,25 @@ export interface TotpEnrollmentCompletion {
   completedAt: string;
   totpSecret: EncryptedTOTPSecret;
   backupCodes: BackupCodeSet;
-  userPatch: TotpEnrollmentUserPatch;
 }
 
-export interface TotpEnrollmentReceipt {
-  version: 1;
+export type TotpEnrollmentCompletion = EnrollmentCompletionMaterial & (
+  | { version: 1; userPatch: TotpEnrollmentUserPatch }
+  | { version: 2; mode: 'self-enrollment'; userPatch: { totpEnabled: true; totpSecretId: string } }
+);
+
+interface EnrollmentReceiptMaterial {
   attemptId: string;
   userId: string;
   handle: string;
   completedAt: string;
   materialDigest: string;
 }
+
+export type TotpEnrollmentReceipt = EnrollmentReceiptMaterial & (
+  | { version: 1 }
+  | { version: 2; mode: 'self-enrollment' }
+);
 
 export interface FileTotpEnrollmentConfig {
   /** Private, durable directory; one application process owns this storage root. */
@@ -64,8 +87,31 @@ export interface FileTotpEnrollmentConfig {
   /** Uncached canonical reads. Must not re-enter this coordinator's gate. */
   loadCurrent(binding: TotpEnrollmentBinding): Promise<TotpEnrollmentCurrentState>;
   /**
+   * Optional SELF-enrollment authority, not a generic browser claims verifier.
+   * Resolve the opaque reference from trusted server-held proof, verify its
+   * integrity and binding to the CURRENT password/provider credential, and
+   * return only verified claims. A reference and its claims are immutable:
+   * never renew its deadline or reissue a previously used reference. Do not
+   * delete/consume proof externally before enrollment commits; the v2 journal
+   * owns attempt binding/consumption. Do not re-enter the auth gate here.
+   * Missing, null or throwing callbacks deny self-enrollment. The coordinator
+   * also enforces current owner/session identity, session expiry and proof TTL.
+   * No callback is required for replay of an already-durable committed journal.
+   */
+  validatePrimaryReauthentication?(input: {
+    reference: string;
+    binding: TotpEnrollmentBinding;
+    currentUser: AdminUser;
+    currentSession: Session;
+    now: Date;
+  }): Promise<PrimaryReauthAuthorization | null>;
+  /**
    * Idempotently and durably write factor, backup hashes and ONLY userPatch,
-   * in that order. Preserve a greater existing onboarding step.
+   * in that order. Preserve a greater existing onboarding step for v1 only;
+   * v2 self-enrollment MUST NOT write any onboarding or privilege fields.
+   * Recheck current owner, active/nonremoved status and material conflicts even
+   * on replay, but never require an unexpired initiating proof to finish a
+   * committed operation. Replay is not authority to disclose setup material.
    * Use raw underlying adapters, not gated entrypoints. Never refresh sessions
    * here. A thrown error keeps all guarded auth traffic closed until recovery.
    */
@@ -82,8 +128,7 @@ export class TotpEnrollmentError extends Error {
   }
 }
 
-interface PendingRecord {
-  version: 1;
+interface PendingMaterial {
   state: 'pending';
   attemptId: string;
   userId: string;
@@ -96,15 +141,26 @@ interface PendingRecord {
   backupCodes: BackupCodeSet;
 }
 
+type PendingRecord = PendingMaterial & (
+  | { version: 1 }
+  | { version: 2; mode: 'self-enrollment'; primaryReauthDigest: string; primaryAuthorizationDigest: string; primaryReauthUses: PrimaryReauthUse[] }
+);
+
+interface PrimaryReauthUse { digest: string; attemptId: string; expiresAt: string }
+
 interface CommittedRecord {
-  version: 1;
+  version: 1 | 2;
+  mode?: 'self-enrollment';
+  primaryReauthUses?: PrimaryReauthUse[];
   state: 'committed';
   completion: TotpEnrollmentCompletion;
   receipt: TotpEnrollmentReceipt;
 }
 
 interface AppliedRecord {
-  version: 1;
+  version: 1 | 2;
+  mode?: 'self-enrollment';
+  primaryReauthUses?: PrimaryReauthUse[];
   state: 'applied';
   sessionDigest: string;
   receipt: TotpEnrollmentReceipt;
@@ -116,6 +172,7 @@ interface GateContext { active: boolean; state: GateState; tail: Promise<void> }
 interface ProcessGate { tail: Promise<void>; context: AsyncLocalStorage<GateContext> }
 const processGates = new Map<string, ProcessGate>();
 const MAX_TTL_MS = 10 * 60 * 1000;
+const MAX_PRIMARY_REAUTH_TTL_MS = 5 * 60 * 1000;
 const HEX_DIGEST = /^[a-f0-9]{64}$/;
 const ATTEMPT_ID = /^[a-f0-9]{48}$/;
 
@@ -183,7 +240,63 @@ function canonical(value: unknown): string {
 }
 
 function materialDigest(completion: TotpEnrollmentCompletion): string {
-  return createHash('sha256').update('tinyland-auth:totp-enrollment:v1\0').update(canonical(completion)).digest('hex');
+  // Never normalize legacy material before hashing: v1 journal bytes retain
+  // their original schema and canonical digest semantics during recovery.
+  const domain = completion.version === 1 ? 'tinyland-auth:totp-enrollment:v1\0' : 'tinyland-auth:totp-enrollment:v2\0';
+  return createHash('sha256').update(domain).update(canonical(completion)).digest('hex');
+}
+
+function requestMode(binding: TotpEnrollmentRequest): TotpEnrollmentMode {
+  if (binding.mode === 'self-enrollment') {
+    text(binding.primaryReauthRef);
+    return 'self-enrollment';
+  }
+  if ((binding.mode === undefined || binding.mode === 'onboarding') && binding.primaryReauthRef === undefined) return 'onboarding';
+  fail('Invalid enrollment mode');
+}
+
+function recordMode(record: { version: 1 | 2 }): TotpEnrollmentMode {
+  return record.version === 1 ? 'onboarding' : 'self-enrollment';
+}
+
+function primaryReauthDigest(reference: string, authorization: PrimaryReauthAuthorization): string {
+  return createHash('sha256').update('tinyland-auth:totp-primary-reauth:v2\0')
+    .update(canonical({ reference, authorization })).digest('hex');
+}
+
+function primaryReferenceDigest(reference: string): string {
+  return createHash('sha256').update('tinyland-auth:totp-primary-reference:v2\0').update(reference).digest('hex');
+}
+
+function validatePrimaryUses(value: unknown, currentAttempt: string): asserts value is PrimaryReauthUse[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 256) fail('Invalid primary proof bindings');
+  const digests = new Set<string>();
+  const attempts = new Set<string>();
+  for (const use of value) {
+    object(use, ['digest', 'attemptId', 'expiresAt']);
+    digest(use.digest);
+    attemptId(use.attemptId);
+    timestamp(use.expiresAt);
+    if (digests.has(use.digest) || attempts.has(use.attemptId)) fail('Duplicate primary proof binding');
+    digests.add(use.digest);
+    attempts.add(use.attemptId);
+  }
+  if (!attempts.has(currentAttempt)) fail('Missing primary proof binding');
+}
+
+function primaryUses(record: EnrollmentRecord | null): PrimaryReauthUse[] {
+  return record?.version === 2 ? record.primaryReauthUses! : [];
+}
+
+/** Read v2 only as explicit self-enrollment; absent mode never widens v1. */
+function versionFields(value: unknown, legacyKeys: readonly string[], v2Extra: readonly string[] = []): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Invalid enrollment record');
+  const record = value as Record<string, unknown>;
+  if (record.version === 1) object(record, legacyKeys);
+  else if (record.version === 2) {
+    object(record, [...legacyKeys, 'mode', ...v2Extra]);
+    if (record.mode !== 'self-enrollment') fail('Invalid v2 enrollment mode');
+  } else fail('Unsupported enrollment version');
 }
 
 function sessionDigest(binding: TotpEnrollmentBinding): string {
@@ -195,8 +308,7 @@ function sessionDigest(binding: TotpEnrollmentBinding): string {
 function copy<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
 
 function validateReceipt(value: unknown): asserts value is TotpEnrollmentReceipt {
-  object(value, ['version', 'attemptId', 'userId', 'handle', 'completedAt', 'materialDigest']);
-  if (value.version !== 1) fail('Unsupported enrollment receipt');
+  versionFields(value, ['version', 'attemptId', 'userId', 'handle', 'completedAt', 'materialDigest']);
   attemptId(value.attemptId);
   text(value.userId);
   text(value.handle);
@@ -205,8 +317,7 @@ function validateReceipt(value: unknown): asserts value is TotpEnrollmentReceipt
 }
 
 function validateCompletion(value: unknown): asserts value is TotpEnrollmentCompletion {
-  object(value, ['version', 'attemptId', 'userId', 'handle', 'sessionDigest', 'completedAt', 'totpSecret', 'backupCodes', 'userPatch']);
-  if (value.version !== 1) fail('Unsupported enrollment completion');
+  versionFields(value, ['version', 'attemptId', 'userId', 'handle', 'sessionDigest', 'completedAt', 'totpSecret', 'backupCodes', 'userPatch']);
   attemptId(value.attemptId);
   text(value.userId);
   text(value.handle);
@@ -219,16 +330,19 @@ function validateCompletion(value: unknown): asserts value is TotpEnrollmentComp
   for (const key of ['encryptedSecret', 'iv', 'authTag', 'salt']) text(factor[key]);
   timestamp(factor.createdAt);
   if (factor.createdAt !== value.completedAt || factor.lastUsedAt !== value.completedAt) fail('Invalid enrollment factor timestamps');
-  object(value.userPatch, ['totpEnabled', 'totpSecretId', 'needsOnboarding', 'onboardingStep']);
-  if (value.userPatch.totpEnabled !== true || value.userPatch.totpSecretId !== value.handle || value.userPatch.needsOnboarding !== true || !Number.isSafeInteger(value.userPatch.onboardingStep) || (value.userPatch.onboardingStep as number) < 2 || (value.userPatch.onboardingStep as number) > 3) fail('Invalid enrollment user patch');
+  object(value.userPatch, value.version === 1
+    ? ['totpEnabled', 'totpSecretId', 'needsOnboarding', 'onboardingStep']
+    : ['totpEnabled', 'totpSecretId']);
+  if (value.userPatch.totpEnabled !== true || value.userPatch.totpSecretId !== value.handle) fail('Invalid enrollment user patch');
+  if (value.version === 1 && (value.userPatch.needsOnboarding !== true || !Number.isSafeInteger(value.userPatch.onboardingStep) || (value.userPatch.onboardingStep as number) < 2 || (value.userPatch.onboardingStep as number) > 3)) fail('Invalid onboarding user patch');
 }
 
 function parseRecord(value: unknown): EnrollmentRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Invalid enrollment record');
   const record = value as Record<string, unknown>;
-  if (record.version !== 1) fail('Unsupported enrollment record');
+  if (record.version !== 1 && record.version !== 2) fail('Unsupported enrollment record');
   if (record.state === 'pending') {
-    object(record, ['version', 'state', 'attemptId', 'userId', 'handle', 'sessionDigest', 'createdAt', 'expiresAt', 'secret', 'recoveryCodes', 'backupCodes']);
+    versionFields(record, ['version', 'state', 'attemptId', 'userId', 'handle', 'sessionDigest', 'createdAt', 'expiresAt', 'secret', 'recoveryCodes', 'backupCodes'], ['primaryReauthDigest', 'primaryAuthorizationDigest', 'primaryReauthUses']);
     attemptId(record.attemptId);
     text(record.userId);
     text(record.handle);
@@ -236,20 +350,31 @@ function parseRecord(value: unknown): EnrollmentRecord {
     timestamp(record.createdAt);
     timestamp(record.expiresAt);
     const age = Date.parse(record.expiresAt) - Date.parse(record.createdAt);
-    if (age <= 0 || age > MAX_TTL_MS) fail('Invalid enrollment expiry');
+    if (age <= 0 || age > (record.version === 1 ? MAX_TTL_MS : MAX_PRIMARY_REAUTH_TTL_MS)) fail('Invalid enrollment expiry');
+    if (record.version === 2) {
+      digest(record.primaryReauthDigest);
+      digest(record.primaryAuthorizationDigest);
+      validatePrimaryUses(record.primaryReauthUses, record.attemptId);
+      const use = record.primaryReauthUses.find((item) => item.attemptId === record.attemptId)!;
+      if (use.digest !== record.primaryReauthDigest || Date.parse(use.expiresAt) < Date.parse(record.expiresAt) ||
+          Date.parse(use.expiresAt) - Date.parse(record.createdAt) > MAX_PRIMARY_REAUTH_TTL_MS) fail('Inconsistent primary proof binding');
+    }
     encrypted(record.secret);
     encrypted(record.recoveryCodes);
     codes(record.backupCodes, record.userId);
   } else if (record.state === 'committed') {
-    object(record, ['version', 'state', 'completion', 'receipt']);
+    versionFields(record, ['version', 'state', 'completion', 'receipt'], ['primaryReauthUses']);
     validateCompletion(record.completion);
     validateReceipt(record.receipt);
     const { completion, receipt } = record;
-    if (receipt.attemptId !== completion.attemptId || receipt.userId !== completion.userId || receipt.handle !== completion.handle || receipt.completedAt !== completion.completedAt || receipt.materialDigest !== materialDigest(completion)) fail('Enrollment receipt does not match its material');
+    if (record.version === 2) validatePrimaryUses(record.primaryReauthUses, receipt.attemptId);
+    if (record.version !== completion.version || record.version !== receipt.version || receipt.attemptId !== completion.attemptId || receipt.userId !== completion.userId || receipt.handle !== completion.handle || receipt.completedAt !== completion.completedAt || receipt.materialDigest !== materialDigest(completion)) fail('Enrollment receipt does not match its material');
   } else if (record.state === 'applied') {
-    object(record, ['version', 'state', 'sessionDigest', 'receipt']);
+    versionFields(record, ['version', 'state', 'sessionDigest', 'receipt'], ['primaryReauthUses']);
     digest(record.sessionDigest);
     validateReceipt(record.receipt);
+    if (record.version !== record.receipt.version) fail('Enrollment receipt version mismatch');
+    if (record.version === 2) validatePrimaryUses(record.primaryReauthUses, record.receipt.attemptId);
   } else {
     fail('Unknown enrollment record state');
   }
@@ -257,7 +382,7 @@ function parseRecord(value: unknown): EnrollmentRecord {
 }
 
 /**
- * Single-process, restart-durable onboarding enrollment. This is not a
+ * Single-process, restart-durable enrollment. This is not a
  * cross-process lock or a distributed transaction. All participating auth
  * traffic/mutations must share withReadyAuth, including application projections.
  */
@@ -322,7 +447,7 @@ export class FileTotpEnrollmentCoordinator {
     await this.withReadyAuth(async () => { await this.recoverUnsafe(); });
   }
 
-  async begin(binding: TotpEnrollmentBinding): Promise<TotpEnrollmentSetup> {
+  async begin(binding: TotpEnrollmentRequest): Promise<TotpEnrollmentSetup> {
     const bound = copy(binding);
     return this.withReadyAuth(async () => {
       const state = await this.current(bound, true);
@@ -330,34 +455,66 @@ export class FileTotpEnrollmentCoordinator {
       const now = this.now().toISOString();
       if (existing?.state === 'pending' && Date.parse(existing.expiresAt) > Date.parse(now)) {
         this.checkBinding(existing, bound, state.user!.handle);
+        this.checkPrimaryAuthorization(existing, bound, state.primaryReauth);
         this.checkExpiry(existing);
         const setup = await this.setup(existing);
         const fresh = await this.current(bound, true);
         this.checkBinding(existing, bound, fresh.user!.handle);
+        this.checkPrimaryAuthorization(existing, bound, fresh.primaryReauth);
         this.checkExpiry(existing);
         return setup;
       }
+      const liveUses = primaryUses(existing).filter((use) => Date.parse(use.expiresAt) > Date.parse(now));
+      if (bound.mode === 'self-enrollment') {
+        if (liveUses.some((use) => use.digest === primaryReferenceDigest(bound.primaryReauthRef))) {
+          throw new TotpEnrollmentError('CONFLICT', 'Primary proof is already bound to an enrollment attempt');
+        }
+        if (liveUses.length >= 256) throw new TotpEnrollmentError('CONFLICT', 'Too many live primary proof bindings');
+      } else if (liveUses.length) {
+        throw new TotpEnrollmentError('CONFLICT', 'Onboarding cannot discard live self-enrollment proof bindings');
+      }
       const generated = await this.config.totp.generateSecret(state.user!.handle);
       const plaintextCodes = generateBackupCodes();
-      const record: PendingRecord = {
-        version: 1, state: 'pending', attemptId: randomBytes(24).toString('hex'),
+      const material: PendingMaterial = {
+        state: 'pending', attemptId: randomBytes(24).toString('hex'),
         userId: bound.userId, handle: state.user!.handle, sessionDigest: sessionDigest(bound),
-        createdAt: now, expiresAt: new Date(Date.parse(now) + this.ttlMs).toISOString(),
+        createdAt: now, expiresAt: new Date(Math.min(Date.parse(now) + this.ttlMs,
+          state.primaryReauth ? Date.parse(state.primaryReauth.expiresAt) : Infinity)).toISOString(),
         secret: this.config.totp.encrypt(generated.secret),
         recoveryCodes: this.config.totp.encrypt(JSON.stringify(plaintextCodes)),
         backupCodes: { ...createBackupCodeSet(bound.userId, plaintextCodes), generatedAt: now },
       };
+      const record: PendingRecord = bound.mode === 'self-enrollment'
+        ? {
+          version: 2, mode: 'self-enrollment', ...material,
+          primaryReauthDigest: primaryReferenceDigest(bound.primaryReauthRef),
+          primaryAuthorizationDigest: primaryReauthDigest(bound.primaryReauthRef, state.primaryReauth!),
+          primaryReauthUses: [...liveUses, {
+            digest: primaryReferenceDigest(bound.primaryReauthRef), attemptId: material.attemptId,
+            expiresAt: state.primaryReauth!.expiresAt,
+          }],
+        }
+        : { version: 1, ...material };
       // Validate ciphertext round trips before publishing any pending authority.
       const setup = await this.setup(record);
       const fresh = await this.current(bound, true);
       this.checkBinding(record, bound, fresh.user!.handle);
+      this.checkPrimaryAuthorization(record, bound, fresh.primaryReauth);
       if (this.now().getTime() >= Date.parse(record.expiresAt)) throw new TotpEnrollmentError('EXPIRED', 'Enrollment expired during setup');
       await this.writeRecord(record);
+      if (record.version === 2) {
+        // Filesystem publication can await I/O past proof/session expiry. The
+        // journal may remain pending, but expired custody must not be shown.
+        const disclosed = await this.current(bound, true);
+        this.checkBinding(record, bound, disclosed.user!.handle);
+        this.checkPrimaryAuthorization(record, bound, disclosed.primaryReauth);
+        this.checkExpiry(record);
+      }
       return setup;
     });
   }
 
-  async complete(input: TotpEnrollmentBinding & { attemptId: string; token: string }): Promise<TotpEnrollmentReceipt> {
+  async complete(input: TotpEnrollmentRequest & { attemptId: string; token: string }): Promise<TotpEnrollmentReceipt> {
     const bound = copy(input);
     attemptId(bound.attemptId);
     return this.withReadyAuth(async () => {
@@ -365,15 +522,17 @@ export class FileTotpEnrollmentCoordinator {
       const record = await this.readRecord(bound.userId);
       if (!record) throw new TotpEnrollmentError('CONFLICT', 'Enrollment attempt does not exist');
       if (record.state === 'applied') {
-        if (record.receipt.attemptId !== bound.attemptId || record.receipt.handle !== state.user!.handle || record.sessionDigest !== sessionDigest(bound)) throw new TotpEnrollmentError('CONFLICT', 'Enrollment receipt belongs to another attempt or session');
+        if (recordMode(record) !== requestMode(bound) || record.receipt.attemptId !== bound.attemptId || record.receipt.handle !== state.user!.handle || record.sessionDigest !== sessionDigest(bound)) throw new TotpEnrollmentError('CONFLICT', 'Enrollment receipt belongs to another attempt or session');
         // Never re-project a receipt: live codes/factors may have changed since.
+        if (record.version === 2) await this.requireReceiptOwner(bound, record.receipt);
         return copy(record.receipt);
       }
       if (record.state !== 'pending') throw new TotpEnrollmentError('RECOVERY_REQUIRED', 'Enrollment projection is incomplete');
       this.checkBinding(record, bound, state.user!.handle);
       if (record.attemptId !== bound.attemptId) throw new TotpEnrollmentError('CONFLICT', 'Enrollment attempt changed');
       this.checkExpiry(record);
-      await this.current(bound, true);
+      const authorized = await this.current(bound, true);
+      this.checkPrimaryAuthorization(record, bound, authorized.primaryReauth);
       this.plainRecoveryCodes(record);
       if (typeof bound.token !== 'string' || !/^\d{6}$/.test(bound.token.replace(/\s/g, ''))) throw new TotpEnrollmentError('INVALID', 'Invalid TOTP code');
       const secret = this.config.totp.decrypt(record.secret);
@@ -382,14 +541,15 @@ export class FileTotpEnrollmentCoordinator {
       this.checkExpiry(record);
       const fresh = await this.current(bound, true);
       this.checkBinding(record, bound, fresh.user!.handle);
+      this.checkPrimaryAuthorization(record, bound, fresh.primaryReauth);
       const ciphertext = this.config.totp.encrypt(secret);
       const roundTrip = Buffer.from(this.config.totp.decrypt(ciphertext));
       const original = Buffer.from(secret);
       if (roundTrip.length !== original.length || !timingSafeEqual(roundTrip, original)) fail('TOTP encryption round trip failed');
       const completedAt = this.now().toISOString();
       this.checkExpiry(record);
-      const completion: TotpEnrollmentCompletion = {
-        version: 1, attemptId: record.attemptId, userId: record.userId, handle: record.handle,
+      const material: EnrollmentCompletionMaterial = {
+        attemptId: record.attemptId, userId: record.userId, handle: record.handle,
         sessionDigest: record.sessionDigest, completedAt,
         totpSecret: {
           userId: record.userId, handle: record.handle, encryptedSecret: ciphertext.encrypted,
@@ -398,35 +558,104 @@ export class FileTotpEnrollmentCoordinator {
           lastUsedAt: completedAt, lastUsedTotpStep: verification.step,
         },
         backupCodes: copy(record.backupCodes),
-        userPatch: { totpEnabled: true, totpSecretId: record.handle, needsOnboarding: true, onboardingStep: Math.max(fresh.user!.onboardingStep, 2) },
       };
-      const receipt: TotpEnrollmentReceipt = {
-        version: 1, attemptId: record.attemptId, userId: record.userId, handle: record.handle,
+      const completion: TotpEnrollmentCompletion = record.version === 1
+        ? { version: 1, ...material, userPatch: { totpEnabled: true, totpSecretId: record.handle, needsOnboarding: true, onboardingStep: Math.max(fresh.user!.onboardingStep, 2) } }
+        : { version: 2, mode: 'self-enrollment', ...material, userPatch: { totpEnabled: true, totpSecretId: record.handle } };
+      const receiptMaterial: EnrollmentReceiptMaterial = {
+        attemptId: record.attemptId, userId: record.userId, handle: record.handle,
         completedAt, materialDigest: materialDigest(completion),
       };
-      const committed: CommittedRecord = { version: 1, state: 'committed', completion, receipt };
+      const receipt: TotpEnrollmentReceipt = record.version === 1
+        ? { version: 1, ...receiptMaterial }
+        : { version: 2, mode: 'self-enrollment', ...receiptMaterial };
+      const committed: CommittedRecord = {
+        version: record.version, ...(record.version === 2 ? { mode: 'self-enrollment' as const, primaryReauthUses: copy(record.primaryReauthUses) } : {}),
+        state: 'committed', completion, receipt,
+      };
       // This replacement consumes the attempt. No projection precedes it.
       this.gate.context.getStore()!.state.recoveryRequired = true;
       await this.writeRecord(committed);
       await this.apply(committed);
       this.gate.context.getStore()!.state.recoveryRequired = false;
+      if (record.version === 2) await this.requireReceiptOwner(bound, receipt);
       return copy(receipt);
     });
   }
 
-  private async current(binding: TotpEnrollmentBinding, requireUnenrolled: boolean): Promise<TotpEnrollmentCurrentState> {
+  private async current(binding: TotpEnrollmentRequest, requireUnenrolled: boolean): Promise<TotpEnrollmentCurrentState & { primaryReauth?: PrimaryReauthAuthorization }> {
+    const mode = requestMode(binding);
     sessionDigest(binding);
-    const current = await this.config.loadCurrent(copy(binding));
+    const current = await this.config.loadCurrent({ userId: binding.userId, sessionId: binding.sessionId });
     const { user, session } = current;
     const expires = session ? Date.parse(session.expires) : NaN;
-    if (!user || user.id !== binding.userId || user.isActive !== true || user.isLocked === true || !ADMIN_ROLES.includes(user.role) || !session || session.id !== binding.sessionId || session.userId !== binding.userId || (session.user && session.user.id !== binding.userId) || !Number.isFinite(expires) || expires <= this.now().getTime()) throw new TotpEnrollmentError('UNAUTHORIZED', 'A live current principal and bound session are required');
+    if (!user || user.id !== binding.userId || user.isActive !== true || user.isLocked === true || Object.hasOwn(user, 'removedAt') || Object.hasOwn(user, 'removedBy') || !ADMIN_ROLES.includes(user.role) || !session || session.id !== binding.sessionId || session.userId !== binding.userId || (session.user && session.user.id !== binding.userId) || !Number.isFinite(expires) || expires <= this.now().getTime()) throw new TotpEnrollmentError('UNAUTHORIZED', 'A live current principal and bound session are required');
     text(user.handle);
-    if (requireUnenrolled && (user.needsOnboarding !== true || !Number.isSafeInteger(user.onboardingStep) || user.onboardingStep < 1 || user.onboardingStep > 3 || user.totpEnabled !== false || Boolean(user.totpSecretId) || current.totpSecret !== null || current.backupCodes !== null)) throw new TotpEnrollmentError('CONFLICT', 'Enrollment requires a pending onboarded profile and no existing factor or backup codes');
+    if (mode === 'self-enrollment' && (user.needsOnboarding !== false || user.firstLogin === true || session.user?.needsOnboarding === true)) throw new TotpEnrollmentError('CONFLICT', 'Self-enrollment requires a completed account and session');
+    if (requireUnenrolled) this.requireAbsentFactor(current, mode);
+    if (mode === 'self-enrollment' && requireUnenrolled) {
+      const resolver = this.config.validatePrimaryReauthentication;
+      if (!resolver || binding.mode !== 'self-enrollment') throw new TotpEnrollmentError('UNAUTHORIZED', 'Current primary reauthentication is required');
+      const snapshot = copy(current);
+      let authorization: PrimaryReauthAuthorization | null;
+      try {
+        authorization = await resolver({
+          reference: binding.primaryReauthRef,
+          binding: { userId: binding.userId, sessionId: binding.sessionId },
+          currentUser: copy(user), currentSession: copy(session), now: this.now(),
+        });
+        object(authorization, ['userId', 'sessionId', 'purpose', 'method', 'issuedAt', 'expiresAt']);
+        timestamp(authorization.issuedAt);
+        timestamp(authorization.expiresAt);
+        const issued = Date.parse(authorization.issuedAt);
+        const deadline = Date.parse(authorization.expiresAt);
+        if (authorization.userId !== binding.userId || authorization.sessionId !== binding.sessionId ||
+            authorization.purpose !== 'totp.enroll' || !['password', 'github'].includes(authorization.method) ||
+            deadline <= issued || deadline - issued > MAX_PRIMARY_REAUTH_TTL_MS ||
+            this.now().getTime() < issued || this.now().getTime() >= deadline) throw new Error('Invalid primary reauthentication');
+      } catch {
+        throw new TotpEnrollmentError('UNAUTHORIZED', 'Current primary reauthentication is required');
+      }
+      // The resolver can await I/O: do not use a pre-await principal/session.
+      const fresh = await this.current(binding, false);
+      this.requireAbsentFactor(fresh, mode);
+      const unchangedCredential = authorization.method === 'password'
+        ? Boolean(snapshot.user!.passwordHash) && snapshot.user!.passwordHash === fresh.user!.passwordHash
+        : Number.isSafeInteger(snapshot.user!.githubId) && (snapshot.user!.githubId as number) > 0 && snapshot.user!.githubId === fresh.user!.githubId;
+      if (!unchangedCredential || snapshot.user!.handle !== fresh.user!.handle ||
+          this.now().getTime() < Date.parse(authorization.issuedAt) || this.now().getTime() >= Date.parse(authorization.expiresAt)) {
+        throw new TotpEnrollmentError('UNAUTHORIZED', 'Primary reauthentication changed during validation');
+      }
+      return { ...fresh, primaryReauth: copy(authorization) };
+    }
     return current;
   }
 
-  private checkBinding(record: PendingRecord, binding: TotpEnrollmentBinding, handle: string): void {
-    if (record.userId !== binding.userId || record.handle !== handle || record.sessionDigest !== sessionDigest(binding)) throw new TotpEnrollmentError('CONFLICT', 'Enrollment belongs to another principal or session');
+  private requireAbsentFactor(current: TotpEnrollmentCurrentState, mode: TotpEnrollmentMode): void {
+    const user = current.user!;
+    if ((mode === 'onboarding' && (user.needsOnboarding !== true || !Number.isSafeInteger(user.onboardingStep) || user.onboardingStep < 1 || user.onboardingStep > 3)) ||
+        user.totpEnabled !== false || Boolean(user.totpSecretId) || current.totpSecret !== null || current.backupCodes !== null) {
+      throw new TotpEnrollmentError('CONFLICT', 'Enrollment requires the correct account mode and no existing factor or backup codes');
+    }
+  }
+
+  private async requireReceiptOwner(binding: TotpEnrollmentRequest, receipt: TotpEnrollmentReceipt): Promise<void> {
+    const current = await this.current(binding, false);
+    if (current.user!.id !== receipt.userId || current.user!.handle !== receipt.handle || requestMode(binding) !== recordMode(receipt)) {
+      throw new TotpEnrollmentError('UNAUTHORIZED', 'A current enrollment receipt owner is required');
+    }
+  }
+
+  private checkBinding(record: PendingRecord, binding: TotpEnrollmentRequest, handle: string): void {
+    if (recordMode(record) !== requestMode(binding) || record.userId !== binding.userId || record.handle !== handle || record.sessionDigest !== sessionDigest(binding)) throw new TotpEnrollmentError('CONFLICT', 'Enrollment belongs to another mode, principal or session');
+  }
+
+  private checkPrimaryAuthorization(record: PendingRecord, binding: TotpEnrollmentRequest, authorization?: PrimaryReauthAuthorization): void {
+    if (record.version === 2 && (binding.mode !== 'self-enrollment' || !authorization ||
+        primaryReferenceDigest(binding.primaryReauthRef) !== record.primaryReauthDigest ||
+        primaryReauthDigest(binding.primaryReauthRef, authorization) !== record.primaryAuthorizationDigest)) {
+      throw new TotpEnrollmentError('UNAUTHORIZED', 'Enrollment requires its original current primary proof');
+    }
   }
 
   private checkExpiry(record: PendingRecord): void {
@@ -502,7 +731,10 @@ export class FileTotpEnrollmentCoordinator {
       text(this.config.totp.decrypt({ encrypted: factor.encryptedSecret, iv: factor.iv, tag: factor.authTag, salt: factor.salt }));
       await this.config.project(copy(record.completion));
       // Only an unapplied commit may be replayed; remove its obsolete material.
-      await this.writeRecord({ version: 1, state: 'applied', sessionDigest: record.completion.sessionDigest, receipt: record.receipt });
+      await this.writeRecord({
+        version: record.version, ...(record.version === 2 ? { mode: 'self-enrollment' as const, primaryReauthUses: copy(record.primaryReauthUses!) } : {}),
+        state: 'applied', sessionDigest: record.completion.sessionDigest, receipt: record.receipt,
+      });
     } catch {
       throw new TotpEnrollmentError('RECOVERY_REQUIRED', 'Enrollment projection must recover before auth traffic can continue');
     } finally {
