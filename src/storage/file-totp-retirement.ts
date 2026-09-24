@@ -89,17 +89,18 @@ function receipt(value: unknown): asserts value is TotpRetirementReceipt {
 }
 function record(value: unknown): asserts value is RetirementRecord {
   if (!value || typeof value !== 'object' || !('state' in value)) fail();
-  if (value.state === 'applied') {
-    keys(value, ['version', 'state', 'authorizationDigest', 'receipt']);
-    if (value.version !== 1) fail();
-    digest(value.authorizationDigest); receipt(value.receipt);
+  const fields = value as Record<string, unknown>;
+  if (fields.state === 'applied') {
+    keys(fields, ['version', 'state', 'authorizationDigest', 'receipt']);
+    if (fields.version !== 1) fail();
+    digest(fields.authorizationDigest); receipt(fields.receipt);
   } else {
-    keys(value, ['version', 'state', 'operationId', 'userId', 'handle', 'factorGeneration', 'factorSnapshotDigest',
+    keys(fields, ['version', 'state', 'operationId', 'userId', 'handle', 'factorGeneration', 'factorSnapshotDigest',
       'recoverySetDigest', 'authorizationDigest', 'factorBinding', 'committedAt']);
-    if (value.version !== 1 || value.state !== 'committed') fail();
-    component(value.userId); component(value.handle); stamp(value.committedAt);
-    for (const field of ['operationId', 'factorGeneration', 'factorSnapshotDigest', 'authorizationDigest', 'factorBinding']) digest(value[field]);
-    if (value.recoverySetDigest !== null) digest(value.recoverySetDigest);
+    if (fields.version !== 1 || fields.state !== 'committed') fail();
+    component(fields.userId); component(fields.handle); stamp(fields.committedAt);
+    for (const field of ['operationId', 'factorGeneration', 'factorSnapshotDigest', 'authorizationDigest', 'factorBinding']) digest(fields[field]);
+    if (fields.recoverySetDigest !== null) digest(fields.recoverySetDigest);
   }
 }
 function authorization(value: unknown, binding: TotpRetirementBinding): asserts value is TotpRetirementConsumedAuthorization {
