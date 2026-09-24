@@ -74,6 +74,7 @@ export type {
   AuthConfig,
   TOTPConfig,
   SessionConfig,
+  BoundedSessionPolicy,
   PasswordConfig,
   RateLimitConfig,
   InvitationConfig,

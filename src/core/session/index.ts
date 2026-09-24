@@ -8,6 +8,7 @@
 
 import type { Session, SessionMetadata, SessionUser, AdminUser, SessionConfig } from '../../types/index.js';
 import type { SessionStorage } from '../../storage/interface.js';
+import { assertBoundedSessionPolicy } from '../../storage/session-policy.js';
 
 export interface SessionManagerConfig {
   storage: SessionStorage;
@@ -31,7 +32,21 @@ export class SessionManager {
     user: Partial<AdminUser>,
     metadata?: SessionMetadata
   ): Promise<Session> {
-    
+    if (this.config.sessionStrategy === 'bounded') {
+      const policy = {
+        maxConcurrentSessions: this.config.maxConcurrentSessions,
+        overflow: 'evict-oldest-created' as const,
+      };
+      assertBoundedSessionPolicy(policy);
+      if (!this.storage.createSessionWithPolicy) {
+        throw new Error('Storage does not support atomic bounded sessions');
+      }
+      return this.storage.createSessionWithPolicy(userId, user, metadata, policy);
+    }
+    if (this.config.sessionStrategy !== undefined && this.config.sessionStrategy !== 'single') {
+      throw new Error('Invalid session strategy');
+    }
+
     await this.storage.deleteUserSessions(userId);
 
     const session = await this.storage.createSession(userId, user, metadata);

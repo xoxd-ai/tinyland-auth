@@ -10,6 +10,8 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { randomBytes, randomUUID } from 'crypto';
+import type { BoundedSessionPolicy } from '../types/config.js';
+import { assertBoundedSessionPolicy, assertStoredSessions, boundedSessions } from './session-policy.js';
 import type { IStorageAdapter, StorageAdapterConfig, AuditEventFilters } from './interface.js';
 import type {
   AdminUser,
@@ -35,6 +37,22 @@ const DEFAULT_CONFIG: FileStorageConfig = {
   totpDir: '.totp-secrets',
   sessionMaxAge: 7 * 24 * 60 * 60 * 1000, 
 };
+
+// One process owns this storage root. Sharing the queue across adapter instances
+// prevents lost updates; it does not claim cross-process/distributed locking.
+const sessionFileTails = new Map<string, Promise<unknown>>();
+
+function withSessionFileQueue<T>(filename: string, operation: () => Promise<T>): Promise<T> {
+  const key = path.resolve(filename);
+  const previous = sessionFileTails.get(key) ?? Promise.resolve();
+  const current = previous.then(operation, operation);
+  sessionFileTails.set(key, current);
+  const cleanup = () => {
+    if (sessionFileTails.get(key) === current) sessionFileTails.delete(key);
+  };
+  void current.then(cleanup, cleanup);
+  return current;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -125,7 +143,26 @@ export class FileStorageAdapter implements IStorageAdapter {
   }
 
   async getAllSessions(): Promise<Session[]> {
-    return this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
+    return withSessionFileQueue(this.getPath('sessions.json'), () => this.readSessions());
+  }
+
+  private async readSessions(): Promise<Session[]> {
+    const sessions = await this.readJsonFile<unknown>(this.getPath('sessions.json'), []);
+    assertStoredSessions(sessions);
+    return sessions;
+  }
+
+  private mutateSessions<T>(
+    operation: (sessions: Session[]) => { sessions: Session[]; result: T },
+  ): Promise<T> {
+    const filename = this.getPath('sessions.json');
+    return withSessionFileQueue(filename, async () => {
+      const next = operation(await this.readSessions());
+      assertStoredSessions(next.sessions);
+      // Already inside the full read/modify/write queue: do not re-enter it.
+      await this.writeJsonFileAtomic(filename, next.sessions);
+      return next.result;
+    });
   }
 
   
@@ -302,7 +339,7 @@ export class FileStorageAdapter implements IStorageAdapter {
   
 
   async getSession(id: string): Promise<Session | null> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
+    const sessions = await this.getAllSessions();
     return sessions.find(s => s.id === id) || null;
   }
 
@@ -311,82 +348,95 @@ export class FileStorageAdapter implements IStorageAdapter {
     userData: Partial<AdminUser>,
     metadata?: SessionMetadata
   ): Promise<Session> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
+    return this.insertSession(userId, userData, metadata);
+  }
 
-    const now = new Date();
-    const expires = new Date(now.getTime() + this.config.sessionMaxAge);
+  async createSessionWithPolicy(
+    userId: string,
+    userData: Partial<AdminUser>,
+    metadata: SessionMetadata | undefined,
+    policy: BoundedSessionPolicy,
+  ): Promise<Session> {
+    assertBoundedSessionPolicy(policy);
+    return this.insertSession(userId, userData, metadata, { ...policy });
+  }
 
-    const session: Session = {
-      id: randomBytes(32).toString('hex'),
-      userId,
-      expires: expires.toISOString(),
-      expiresAt: expires.toISOString(),
-      createdAt: now.toISOString(),
-      user: userData.id ? {
-        id: userData.id,
-        username: userData.handle || '',
-        name: userData.displayName || userData.handle || '',
-        role: userData.role || 'viewer',
-        needsOnboarding: userData.needsOnboarding,
-        onboardingStep: userData.onboardingStep,
-      } : undefined,
-      clientIp: metadata?.clientIp || '',
-      clientIpMasked: metadata?.clientIpMasked,
-      userAgent: metadata?.userAgent || '',
-      deviceType: metadata?.deviceType,
-      browserFingerprint: metadata?.browserFingerprint,
-      geoLocation: metadata?.geoLocation,
-    };
+  private insertSession(
+    userId: string,
+    userData: Partial<AdminUser>,
+    metadata?: SessionMetadata,
+    policy?: BoundedSessionPolicy,
+  ): Promise<Session> {
+    return this.mutateSessions((sessions) => {
+      const now = new Date();
+      const expires = new Date(now.getTime() + this.config.sessionMaxAge);
+      const session: Session = {
+        id: randomBytes(32).toString('hex'),
+        userId,
+        expires: expires.toISOString(),
+        expiresAt: expires.toISOString(),
+        createdAt: now.toISOString(),
+        user: userData.id ? {
+          id: userData.id,
+          username: userData.handle || '',
+          name: userData.displayName || userData.handle || '',
+          role: userData.role || 'viewer',
+          needsOnboarding: userData.needsOnboarding,
+          onboardingStep: userData.onboardingStep,
+        } : undefined,
+        clientIp: metadata?.clientIp || '',
+        clientIpMasked: metadata?.clientIpMasked,
+        userAgent: metadata?.userAgent || '',
+        deviceType: metadata?.deviceType,
+        browserFingerprint: metadata?.browserFingerprint,
+        geoLocation: metadata?.geoLocation,
+      };
 
-    sessions.push(session);
-    await this.writeJsonFile(this.getPath('sessions.json'), sessions);
-    return session;
+      return {
+        sessions: policy ? boundedSessions(sessions, session, policy, now.getTime()) : [...sessions, session],
+        result: session,
+      };
+    });
   }
 
   async updateSession(id: string, updates: Partial<Session>): Promise<Session> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
-    const index = sessions.findIndex(s => s.id === id);
-
-    if (index === -1) {
-      throw new Error(`Session not found: ${id}`);
-    }
-
-    sessions[index] = { ...sessions[index], ...updates };
-    await this.writeJsonFile(this.getPath('sessions.json'), sessions);
-    return sessions[index];
+    return this.mutateSessions((sessions) => {
+      const index = sessions.findIndex(s => s.id === id);
+      if (index === -1) throw new Error(`Session not found: ${id}`);
+      sessions[index] = { ...sessions[index], ...updates };
+      return { sessions, result: sessions[index] };
+    });
   }
 
   async deleteSession(id: string): Promise<boolean> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
-    const index = sessions.findIndex(s => s.id === id);
-
-    if (index === -1) return false;
-
-    sessions.splice(index, 1);
-    await this.writeJsonFile(this.getPath('sessions.json'), sessions);
-    return true;
+    return this.mutateSessions((sessions) => {
+      const index = sessions.findIndex(s => s.id === id);
+      if (index === -1) return { sessions, result: false };
+      sessions.splice(index, 1);
+      return { sessions, result: true };
+    });
   }
 
   async deleteUserSessions(userId: string): Promise<number> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
-    const before = sessions.length;
-    const filtered = sessions.filter(s => s.userId !== userId);
-    await this.writeJsonFile(this.getPath('sessions.json'), filtered);
-    return before - filtered.length;
+    return this.mutateSessions((sessions) => {
+      const before = sessions.length;
+      const filtered = sessions.filter(s => s.userId !== userId);
+      return { sessions: filtered, result: before - filtered.length };
+    });
   }
 
   async getSessionsByUser(userId: string): Promise<Session[]> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
+    const sessions = await this.getAllSessions();
     return sessions.filter(s => s.userId === userId);
   }
 
   async cleanupExpiredSessions(): Promise<number> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
-    const now = new Date();
-    const before = sessions.length;
-    const filtered = sessions.filter(s => new Date(s.expires) > now);
-    await this.writeJsonFile(this.getPath('sessions.json'), filtered);
-    return before - filtered.length;
+    return this.mutateSessions((sessions) => {
+      const now = new Date();
+      const before = sessions.length;
+      const filtered = sessions.filter(s => new Date(s.expires) > now);
+      return { sessions: filtered, result: before - filtered.length };
+    });
   }
 
   

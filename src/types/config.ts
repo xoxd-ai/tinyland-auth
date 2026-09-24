@@ -51,7 +51,14 @@ export interface TOTPConfig {
   backupCodesCount: number;
 }
 
+export interface BoundedSessionPolicy {
+  maxConcurrentSessions: number;
+  overflow: 'evict-oldest-created';
+}
+
 export interface SessionConfig {
+  /** Existing consumers remain single-session until explicitly opted in. */
+  sessionStrategy?: 'single' | 'bounded';
   
   maxAge: number;
   
