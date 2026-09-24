@@ -45,3 +45,25 @@ export {
   type TotpEnrollmentReceipt,
   type TotpEnrollmentUserPatch,
 } from './file-totp-enrollment.js';
+
+export {
+  FileBootstrapCoordinator,
+  BootstrapJournalError,
+  type FileBootstrapConfig,
+  type BootstrapProfile,
+  type BootstrapSetup,
+  type BootstrapCompletion,
+  type BootstrapReceipt,
+} from './file-bootstrap.js';
+
+export {
+  FileActionStepUpStore,
+  ActionStepUpError,
+  type FileActionStepUpConfig,
+  type ActionStepUpIdentity,
+  type ActionStepUpBinding,
+  type ActionStepUpAction,
+  type ActionStepUpChallenge,
+  type ActionStepUpPermit,
+  type ActionStepUpReceipt,
+} from './action-step-up.js';

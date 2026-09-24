@@ -504,14 +504,130 @@ code, writes the `super_admin`, stores backup codes, logs a
 
 Protect `state` in transit. `BootstrapState` is a plain object that holds a raw
 (unencrypted) TOTP secret, the bcrypt password hash, and the plaintext backup
-codes. The package does not sign, encrypt, or serialize it for you. Do not
-round-trip it through the browser unprotected: keep it server-side, or if you
-must hand it to the client between `initiate` and `complete`, wrap it in a
-signed, httpOnly cookie (or equivalent) whose integrity you enforce yourself.
+codes. This legacy service does not sign, encrypt, or serialize it for you.
+A signed/httpOnly cookie is NOT confidential: do not put this state in browser
+custody. It also has no durable multi-record completion journal. Use the opt-in
+coordinator below when crash-safe server-held setup is required.
 
 The seed script in section 6 is the lower-friction path for most apps; reach for
 `BootstrapService` when you want the whole thing to happen inside the running app
 with no shell access.
+
+### Encrypted durable file bootstrap (unreleased candidate)
+
+`FileBootstrapCoordinator` from `@tummycrypt/tinyland-auth/storage` adds an
+explicit, opt-in file transaction. It does not change `BootstrapService`, open
+bootstrap on an installed system, or migrate/modify existing administrators.
+With no journal, `recover()` performs no writes, including no directory creation.
+
+Configure `directory`, a stable deployment/tenant `scope`, the existing
+configured `TOTPService`, raw `storage` reads (`getAllUsers`, `getTOTPSecret`,
+`getBackupCodes`), `withExclusiveAuth`, and an idempotent `project` callback.
+The encryption key must have durable operator custody before use; do not supply
+a development fallback. Encryption uses the existing scrypt/AES-256-GCM
+configuration. Every payload includes a bootstrap-specific domain, versioned
+schema and deployment scope INSIDE its authenticated ciphertext. Plaintext
+headers are only envelope version and encryption parameters. No new database
+or general-purpose browser claim store is introduced.
+
+API:
+
+- `begin({ handle, passwordHash, profile? })` reserves one empty installation
+  and returns setup material plus a random 256-bit `reference`. New handles are
+  trimmed/lowercased and must match `[a-z0-9][a-z0-9_-]{2,29}` (3–30 characters).
+  The returned effective handle is used for every frozen owner/factor/profile
+  identity; existing users and authenticated journal records are never renamed.
+- `read(reference)` resumes the SAME attempt after restart, only while it is
+  unexpired, correctly bound, and the installation is still empty.
+- `updateProfile(reference, profile)` changes only bounded profile metadata;
+  it never changes the user ID, factor, reference or original expiry.
+- `acknowledgeBackupCodes(reference)` durably records an explicit server action
+  acknowledging THIS pending attempt's codes. `BootstrapSetup` exposes
+  `backupCodesAcknowledged` for resumed UI state. Completion is denied before
+  token verification until acknowledged; a new/replacement attempt starts false.
+- `complete({ reference, token })` verifies the factor with its consumed TOTP
+  step, durably commits frozen completion material, projects it and returns a
+  safe historical receipt. It never returns a user/session or issues a login.
+- `recover()` finishes committed projection without an unexpired browser
+  reference; it does not disclose setup, raw factor, password hash or codes.
+- `assertAvailable()` rejects existing users, live pending reservations and
+  the permanent applied latch. Alternative initialization MUST hold the same
+  external auth gate across this check AND all its writes; calling this method
+  alone and later creating a user outside the gate is not safe.
+
+Only the opaque `reference` belongs in the httpOnly, strict-same-site setup
+cookie. It is a temporary setup capability, not a user/session credential. The
+journal persists its domain-separated digest, never the reference itself.
+The whole pending record is encrypted, including password hash, TOTP secret,
+plaintext recovery codes and profile. Pending TTL is absolute, positive and at
+most ten minutes; no read/profile update extends it. Expired pending may be
+replaced only with no users and no conflicting candidate factor/recovery state.
+Old references cannot adopt replacements. Applied completion stays latched even
+if all users are subsequently removed; normal removal is not rebootstrap consent.
+
+The coordinator requires the application's SHARED reentrant single-process
+auth gate. Do not use a no-op gate or an independent bootstrap-only mutex.
+Use the same gate for user/invitation creation, OAuth initialization, password
+changes and other auth writes. Run bootstrap recovery before route/bootstrap
+existence checks, sessions, invitations or other auth traffic. The canonical
+enrollment coordinator's `withReadyAuth` can provide this gate; app readiness
+can then recover bootstrap and invitation journals inside it. Projection uses
+raw adapters, never gated entrypoints. Multi-pod/distributed locking is NOT
+provided. Namespace/scope and gate identity must remain stable across restarts.
+
+Apps with user-owned content supply the optional trusted
+`assertNamespaceAvailable(handle): Promise<void>` callback. It runs under that
+same gate before new material generation, before publishing pending, and
+immediately before commit. Reject any existing namespace path (directory, file
+or symlink), including retained content whose user has been removed; never adopt
+it just because the user store is empty. Callback failures are generic conflicts
+and cannot leak private paths. The callback is read-only and must not reenter
+the gate. It does NOT run during committed recovery: the idempotent projection
+must instead validate and finish only its exact frozen owned content. A shared
+gate protects cooperating app writers, not independent external filesystem edits.
+
+The backup acknowledgment action must be an actual validated POST (and bound to
+the opaque reference), not a client-only checkbox or navigation link. Visiting
+the final step or submitting its token directly cannot substitute for the
+durable acknowledgment. Profile updates and restarts preserve it without
+extending TTL; invalid/expired/other-attempt references cannot acknowledge it.
+
+Each write uses a private (0700) directory, an exclusive 0600 temporary file,
+file fsync, atomic rename and directory fsync. Newly created directory entries
+are synced through their existing parent. Pending is durable before any setup
+material returns. Empty-user/factor authority and expiry are rechecked after
+asynchronous generation, verification and pending publication. Commit freezes
+one explicit user ID, the consumed factor step, backup hashes, profile and a
+canonical material digest BEFORE any projection. A crash after committed
+rename, including an uncertain directory sync, is repaired before auth resumes.
+Incorrect key/scope, malformed/unknown versions, conflicting live records and
+projection failures keep recovery closed; there is no plaintext/legacy fallback.
+
+Projection must preserve frozen identity and detect conflicting user, factor,
+backup and profile data. Write factor and backup hashes and the optional profile
+BEFORE creating the user, using the explicit completion user ID. Do not overwrite
+an existing profile or matching user's subsequently changed credentials, grants,
+flags or factor state. Preserve used backup codes and monotonic factor counters
+on partial replay. An identical already-published user can finish an interrupted
+transaction; another owner, removed marker or changed immutable identity cannot.
+Never delete partial records as rollback. Once applied, recovery does not project
+again, so later authorized account changes are untouched. Receipts describe a
+historical operation, not current factor/account status.
+
+Migration is source-only until explicitly activated: reject old secret-bearing
+bootstrap cookies rather than importing their browser claims. Empty installations
+can start a fresh attempt; existing users remain unchanged. GitHub or other
+first-run creation must either join this authority or be explicitly held closed;
+ordinary linked-account login is a separate flow and must remain available.
+Never infer provider MFA merely from a successful OAuth exchange.
+
+The first pending journal write is a rollback barrier. An older application
+that ignores this journal can create a competing administrator or miss recovery.
+Retain a journal-aware reader/projector in rollback images, or explicitly use
+roll-forward recovery. Retain the key and scope with durable storage backups;
+do not erase/downgrade journals or restore stale factor/user files to boot an old
+image. No state migration, runtime initialization or publication is performed by
+adding these source APIs.
 
 ## 10. Minimum viable checklist
 
