@@ -1,6 +1,8 @@
+load("@aspect_rules_js//js:defs.bzl", "js_test")
 load("@aspect_rules_js//npm:defs.bzl", "npm_package")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
 load("@tummycrypt_tinyland_auth_npm//:defs.bzl", "npm_link_all_packages")
+load("@tummycrypt_tinyland_auth_npm//:publint/package_json.bzl", publint_bin = "bin")
 load("@tummycrypt_tinyland_auth_npm//:vitest/package_json.bzl", vitest_bin = "bin")
 
 package(default_visibility = ["//visibility:public"])
@@ -105,4 +107,49 @@ npm_package(
     ],
     package = "@tummycrypt/tinyland-auth",
     version = "0.7.1",
+)
+
+# TIN-4435/AP3: the three qualification targets the tinyland.dev candidate-image
+# publisher's own-workspace gate (qualify-nonprod-canonical-sources.sh) expects
+# from this source. Each wraps a check this repo already runs elsewhere
+# (release_metadata_test = the `pnpm check:release-metadata` script also run
+# by ci.yml's metadata_check_command; invitation_authority_test = the standing
+# TIN-2780 tripwire also run as `pnpm check:invitation-authority`;
+# package_artifact_test = the `publint` lint ci.yml runs as `pnpm check:package`,
+# here pointed at the actual assembled :pkg artifact instead of the source tree).
+
+js_test(
+    name = "release_metadata_test",
+    data = [
+        "BUILD.bazel",
+        "CHANGELOG.md",
+        "MODULE.bazel",
+        "package.json",
+        "scripts/check-release-metadata.mjs",
+    ],
+    chdir = package_name(),
+    entry_point = "scripts/check-release-metadata.mjs",
+)
+
+js_test(
+    name = "invitation_authority_test",
+    data = [
+        "package.json",
+        "scripts/check-invitation-authority.mjs",
+        "src/index.ts",
+        ":node_modules/typescript",
+        ":tinyland_auth_types",
+    ],
+    chdir = package_name(),
+    entry_point = "scripts/check-invitation-authority.mjs",
+)
+
+publint_bin.publint_test(
+    name = "package_artifact_test",
+    args = [
+        "$(rootpath :pkg)",
+        "--pack",
+        "false",
+    ],
+    data = [":pkg"],
 )
