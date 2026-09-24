@@ -75,6 +75,7 @@ vitest_bin.vitest_test(
 # does not run either guard, and the declaration check needs compiler output.
 js_test(
     name = "release_metadata_test",
+    chdir = package_name(),
     entry_point = "scripts/check-release-metadata.mjs",
     data = [
         "scripts/check-release-metadata.mjs",
@@ -88,9 +89,10 @@ js_test(
 js_test(
     name = "invitation_authority_test",
     entry_point = "scripts/check-invitation-authority.mjs",
-    include_types = True,
+    chdir = package_name(),
     data = [
-        ":tinyland_auth",
+        # Reconcile main e42006b: declarations are a distinct output group.
+        ":tinyland_auth_types",
         ":node_modules/typescript",
         "scripts/check-invitation-authority.mjs",
         "src/index.ts",
@@ -102,6 +104,7 @@ js_test(
 # is a locked third-party validator, never a package-provider publication lane.
 js_test(
     name = "package_artifact_test",
+    chdir = package_name(),
     entry_point = "scripts/check-package-artifact.mjs",
     args = ["$(rootpath :pkg)"],
     data = [

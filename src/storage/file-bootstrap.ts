@@ -198,8 +198,11 @@ function completion(value: unknown): asserts value is BootstrapCompletion {
     ids.add(code.id);
   }
 }
-function record(value: unknown): asserts value is RecordState {
-  if (!value || typeof value !== 'object' || !('state' in value)) invalid();
+function record(input: unknown): asserts input is RecordState {
+  if (!input || typeof input !== 'object' || !('state' in input)) invalid();
+  // Keep unknown field types until the state-specific validators below prove
+  // them. `state in input` alone narrows to only that one property in TS.
+  const value = input as Record<string, unknown>;
   if (value.state === 'pending') {
     object(value, ['state', 'attemptId', 'referenceDigest', 'userId', 'handle', 'passwordHash', 'secret', 'backupCodes', 'backupCodesAcknowledged', 'createdAt', 'expiresAt'], ['profile']);
     hex(value.attemptId); hex(value.referenceDigest); text(value.userId, 128); handle(value.handle); passwordHash(value.passwordHash);

@@ -74,8 +74,9 @@ jobs:
       expect(metadata).toContain(`"${input}"`);
     }
     expect(invitations).toContain('entry_point = "scripts/check-invitation-authority.mjs"');
-    expect(invitations).toContain('include_types = True');
-    for (const input of [':tinyland_auth', ':node_modules/typescript', 'src/index.ts', 'package.json']) {
+    expect(metadata).toContain('chdir = package_name()');
+    expect(invitations).toContain('chdir = package_name()');
+    for (const input of [':tinyland_auth_types', ':node_modules/typescript', 'src/index.ts', 'package.json']) {
       expect(invitations).toContain(`"${input}"`);
     }
   });
@@ -93,6 +94,7 @@ jobs:
     const artifact = build.match(/js_test\(\s*name = "package_artifact_test",([\s\S]*?)\n\)/)?.[1];
     expect(artifact).toContain('":pkg"');
     expect(artifact).toContain('":node_modules/publint"');
+    expect(artifact).toContain('chdir = package_name()');
     expect(build).toContain('scripts/check-invitation-authority.mjs');
     expect(build).toContain('scripts/check-release-metadata.mjs');
     const candidate = await readText(candidatePath);

@@ -15,7 +15,7 @@ import ts from 'typescript';
 // dist/index.d.ts is caught too, and it verifies the retained type-only
 // compatibility exports remain present.
 //
-// Bazel //:invitation_authority_test supplies the actual :tinyland_auth output,
+// Bazel //:invitation_authority_test supplies the :tinyland_auth_types output,
 // including dist/index.d.ts. A source-only check is not a replacement.
 
 const surfaces = ['src/index.ts', 'dist/index.d.ts'];

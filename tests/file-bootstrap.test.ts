@@ -70,6 +70,31 @@ async function fixture(overrides: Partial<FileBootstrapConfig> = {}) {
 }
 
 describe('encrypted durable bootstrap coordinator', () => {
+  it('retains strict unknown-field validation across every authenticated journal state', async () => {
+    const f = await fixture();
+    await f.coordinator.begin(input);
+    const original = await f.read();
+    const pending = original.record;
+    const malformed = [
+      { ...pending, attemptId: 42 }, { ...pending, userId: null },
+      { ...pending, secret: 42 }, { ...pending, backupCodesAcknowledged: 'true' },
+      { ...pending, backupCodes: [...pending.backupCodes.slice(0, 9), 42] },
+      { ...pending, backupCodes: Array(10).fill(pending.backupCodes[0]) },
+      { ...pending, expiresAt: 42 }, { ...pending, profile: { role: 'super_admin' } },
+      { state: 'pending' }, { ...pending, state: 'unknown' },
+      { state: 'committed', referenceDigest: pending.referenceDigest, completion: {}, receipt: {} },
+      { state: 'applied', referenceDigest: pending.referenceDigest, receipt: {} },
+    ];
+    for (const record of malformed) {
+      await f.write({ ...original, record });
+      await expect(f.fresh().recover()).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    }
+    expect(f.project).not.toHaveBeenCalled();
+    expect(f.totp.verifyTokenWithStep).not.toHaveBeenCalled();
+    await f.write(original);
+    await expect(f.fresh().recover()).resolves.toBeUndefined();
+  });
+
   it('normalizes a new uppercase handle across setup, journal, factor and frozen profile owner', async () => {
     const f = await fixture();
     const setup = await f.coordinator.begin({ ...input, handle: '  First-ADMIN  ', profile: PROFILE });

@@ -48,6 +48,40 @@ afterEach(async () => {
 });
 
 describe('file-backed action-bound TOTP step-up', () => {
+  it('rejects correctly sealed but structurally invalid records before factor verification', async () => {
+    const f = await fixture();
+    const bound = binding();
+    const challenge = await f.store.issue(bound);
+    const filename = path.join(f.directory, (await f.files())[0]);
+    const original = await fs.readFile(filename, 'utf8');
+    const pending = JSON.parse(original).record;
+    const verified = { ...pending, state: 'verified', verifiedAt: START, permitDigest: hmac('permit') };
+    const consumed = { ...verified, state: 'consumed', consumedAt: START, receiptDigest: hmac('receipt') };
+    const invalid = [
+      { ...pending, action: 1 }, { ...pending, state: 'unknown' },
+      { ...pending, createdAt: String(START) }, { ...pending, expiresAt: String(START + 1000) },
+      { ...pending, failures: '0' }, { ...pending, extra: true },
+      { ...verified, verifiedAt: String(START) }, { ...verified, verifiedAt: pending.expiresAt },
+      { ...consumed, consumedAt: String(START) }, { ...consumed, consumedAt: START - 1 },
+      { ...consumed, receiptDigest: null },
+    ];
+    const verifier = vi.fn(async () => true);
+    for (const record of invalid) {
+      const seal = createHmac('sha256', KEY).update('tinyland-auth:action-step-up:seal:v1\0')
+        .update(JSON.stringify(record)).digest('hex');
+      const bytes = JSON.stringify({ version: 1, record, seal });
+      await fs.writeFile(filename, bytes);
+      await expect(f.fresh().verify({ challengeId: challenge.challengeId, identity: bound }, verifier))
+        .rejects.toMatchObject({ code: 'INVALID' });
+      expect(await fs.readFile(filename, 'utf8')).toBe(bytes);
+    }
+    expect(verifier).not.toHaveBeenCalled();
+    await fs.writeFile(filename, original);
+    await expect(f.fresh().verify({ challengeId: challenge.challengeId, identity: bound }, verifier))
+      .resolves.toMatchObject(challenge);
+    expect(verifier).toHaveBeenCalledOnce();
+  });
+
   it('seals private pending, verified and consumed records without raw references, bearer, resource or intent', async () => {
     const f = await fixture();
     const bound = binding();

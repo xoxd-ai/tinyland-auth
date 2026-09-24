@@ -150,25 +150,26 @@ function assertRecord(value: unknown): asserts value is StepUpRecord {
   else if (candidate.state === 'verified') assertKeys(value, [...common, 'verifiedAt', 'permitDigest']);
   else if (candidate.state === 'consumed') assertKeys(value, [...common, 'verifiedAt', 'permitDigest', 'consumedAt', 'receiptDigest']);
   else throw new ActionStepUpError('INVALID', 'Unknown step-up state');
-  const record = value as StepUpRecord;
-  if (record.version !== 1 || !ACTIONS.has(record.action) ||
+  const record = candidate;
+  if (record.version !== 1 || typeof record.action !== 'string' || !ACTIONS.has(record.action) ||
       (record.resourceKind !== 'user' && record.resourceKind !== 'invitation')) {
     throw new ActionStepUpError('INVALID', 'Invalid step-up record authority');
   }
   for (const field of ['referenceDigest', 'identityDigest', 'bindingDigest', 'userDigest',
     'factorBinding', 'resourceDigest', 'intentDigest', 'targetDigest'] as const) assertDigest(record[field]);
-  if (!Number.isSafeInteger(record.createdAt) || !Number.isSafeInteger(record.expiresAt) ||
+  if (typeof record.createdAt !== 'number' || typeof record.expiresAt !== 'number' ||
+      !Number.isSafeInteger(record.createdAt) || !Number.isSafeInteger(record.expiresAt) ||
       record.expiresAt <= record.createdAt || record.expiresAt - record.createdAt > MAX_TTL_MS ||
-      !Number.isSafeInteger(record.failures) || record.failures < 0 || record.failures > MAX_FAILURES) {
+      typeof record.failures !== 'number' || !Number.isSafeInteger(record.failures) || record.failures < 0 || record.failures > MAX_FAILURES) {
     throw new ActionStepUpError('INVALID', 'Invalid step-up lifetime or failure count');
   }
-  if (record.state !== 'pending' && (!Number.isSafeInteger(record.verifiedAt) ||
-      record.verifiedAt! < record.createdAt || record.verifiedAt! >= record.expiresAt)) {
+  if (record.state !== 'pending' && (typeof record.verifiedAt !== 'number' || !Number.isSafeInteger(record.verifiedAt) ||
+      record.verifiedAt < record.createdAt || record.verifiedAt >= record.expiresAt)) {
     throw new ActionStepUpError('INVALID', 'Invalid verification time');
   }
   if (record.state !== 'pending') assertDigest(record.permitDigest);
-  if (record.state === 'consumed' && (!Number.isSafeInteger(record.consumedAt) ||
-      record.consumedAt! < record.verifiedAt! || record.consumedAt! >= record.expiresAt)) {
+  if (record.state === 'consumed' && (typeof record.consumedAt !== 'number' || typeof record.verifiedAt !== 'number' ||
+      !Number.isSafeInteger(record.consumedAt) || record.consumedAt < record.verifiedAt || record.consumedAt >= record.expiresAt)) {
     throw new ActionStepUpError('INVALID', 'Invalid consumption time');
   }
   if (record.state === 'consumed') assertDigest(record.receiptDigest);
