@@ -82,7 +82,7 @@
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
-    "nanoid": "^5.0.7",
+    "nanoid": "^6.0.0",
     "otplib": "^13.4.1",
     "qrcode": "^1.5.3"
   },
