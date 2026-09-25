@@ -1,0 +1,59 @@
+DRAFT — pending operator review. Not yet ratified. (2026-07-11)
+
+This repository's `package.json` declares its license as the SPDX expression
+`Zlib AND LicenseRef-Tinyland-Proprietary`, but no `LICENSE` file existed in
+the repository prior to this draft, and no text for
+`LicenseRef-Tinyland-Proprietary` exists anywhere in this repo or elsewhere
+in the org as of this writing. This file is a starting point, not a
+ratified license grant: the Zlib portion below is the standard, public,
+unmodified license text (safe to vendor verbatim), and the proprietary
+portion is an explicit placeholder that must be filled in and reviewed by
+the operator before this file can be treated as authoritative.
+
+================================================================================
+PART 1 — Zlib License (applies to the portions of this software designated
+Zlib-licensed per the package's SPDX expression)
+================================================================================
+
+zlib License
+
+Copyright (c) Tinyland.dev
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+
+================================================================================
+PART 2 — LicenseRef-Tinyland-Proprietary (applies to the portions of this
+software designated proprietary per the package's SPDX expression)
+================================================================================
+
+[PLACEHOLDER — proprietary terms not yet drafted; operator must finalize and
+replace this section before this file can be considered a complete or
+enforceable license grant. Do not treat the absence of terms here as either
+a grant or a denial of rights to any proprietary-designated portion of this
+software; until this section is filled in, the proprietary half of the SPDX
+expression has no corresponding text anywhere in this repository or the
+Tinyland org, which is the gap this draft exists to flag.]
+
+================================================================================
+Operator note
+================================================================================
+
+Which files/directories/modules within this repository fall under Part 1
+versus Part 2 is not specified anywhere in the source as of this draft. That
+split, and the Part 2 text itself, are both operator-owned follow-ups — see
+`package.json`'s `license` field for the SPDX expression this file is
+standing in for.
