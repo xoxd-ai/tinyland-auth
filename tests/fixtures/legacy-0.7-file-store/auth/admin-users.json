@@ -1,0 +1,30 @@
+[
+  {
+    "id": "legacy-owner-001",
+    "handle": "legacy_owner",
+    "email": "legacy-owner@example.test",
+    "displayName": "Legacy Owner",
+    "passwordHash": "$2b$12$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "totpEnabled": true,
+    "totpSecretId": "legacy_owner",
+    "role": "super_admin",
+    "isActive": true,
+    "needsOnboarding": false,
+    "onboardingStep": 0,
+    "createdAt": "2026-01-02T03:04:05.000Z",
+    "updatedAt": "2026-01-02T03:04:05.000Z"
+  },
+  {
+    "id": "legacy-member-001",
+    "handle": "legacy_member",
+    "displayName": "Legacy Member",
+    "passwordHash": "$2b$12$BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "totpEnabled": false,
+    "role": "member",
+    "isActive": true,
+    "needsOnboarding": false,
+    "onboardingStep": 0,
+    "createdAt": "2026-02-03T04:05:06.000Z",
+    "updatedAt": "2026-02-03T04:05:06.000Z"
+  }
+]

@@ -118,4 +118,55 @@ describe('package release authority', () => {
     expect(mvpDoc).toContain('repo-owned GloriousFlywheel runner lane');
     expect(normalizeWhitespace(mvpDoc)).toContain('npmjs publication is disabled');
   });
+
+  it('keeps the atomic bootstrap contract source-only and durable adapters unsupported', async () => {
+    const readme = await readText('README.md');
+    const changelog = await readText('CHANGELOG.md');
+    const guide = await readText('docs/bootstrap-from-zero.md');
+
+    expect(changelog).toContain('### Major Changes');
+    expect(changelog).toContain('breaking, source-only 0.8 contract');
+    expect(readme).toContain('No 0.8 package');
+    expect(normalizeWhitespace(readme)).toContain(
+      'PG/Redis releases do not implement or support',
+    );
+    expect(guide).toContain('not part of released 0.7.1');
+    expect(normalizeWhitespace(guide)).toContain(
+      'current PostgreSQL/Redis adapters do not support',
+    );
+    expect(normalizeWhitespace(readme)).toContain(
+      'must place initiation behind an operator-only local control',
+    );
+    expect(normalizeWhitespace(guide)).toContain(
+      'must require an attended operator-only/local gate',
+    );
+    expect(guide).toContain("authDir: join(authRoot, 'records')");
+    expect(guide).toContain("totpDir: join(authRoot, 'secrets')");
+    expect(guide).toContain("join(AUTH_ROOT, 'operator', 'auth-seed.packet')");
+    expect(guide).toContain('Back up and restore the complete root');
+  });
+
+  it('persists recoverable operator material before claim and renders it before commit', async () => {
+    const guide = await readText('docs/bootstrap-from-zero.md');
+    const packetWrite = guide.indexOf('await persistPacket(PACKET_PATH, packet, recoveryKey)');
+    const receiptRead = guide.indexOf(
+      'await storage.getFirstUserBootstrapReceipt(tenantId)',
+    );
+    const packetCreate = guide.indexOf('await createPacket(tenantId, totp)');
+    const claim = guide.indexOf('await storage.claimFirstUserBootstrap(packet.claim)');
+    const render = guide.indexOf("console.log('Scan this TOTP secret");
+    const finalize = guide.indexOf(
+      'await storage.finalizeFirstUserBootstrap(packet.finalization)',
+      claim,
+    );
+
+    expect(guide).toContain('await recoverPacket(PACKET_PATH, recoveryKey)');
+    expect(guide).toContain('Receipt-first recovery');
+    expect(receiptRead).toBeGreaterThan(-1);
+    expect(receiptRead).toBeLessThan(packetCreate);
+    expect(packetWrite).toBeGreaterThan(-1);
+    expect(packetWrite).toBeLessThan(claim);
+    expect(render).toBeGreaterThan(claim);
+    expect(render).toBeLessThan(finalize);
+  });
 });

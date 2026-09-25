@@ -3,8 +3,10 @@
  *
  * Bridges between tenant-scoped storage backends (Pattern B — every method
  * takes `tenantId` as its first parameter) and the standard `IStorageAdapter`
- * (Pattern A — no tenantId parameter). Useful for single-tenant deployments
- * built on top of a multi-tenant backend like @tummycrypt/tinyland-auth-pg.
+ * (Pattern A — no tenantId parameter). The tenant-scoped backend must natively
+ * implement the complete interface below. Current PG/Redis packages implement
+ * only its legacy methods and cannot back the unreleased atomic bootstrap flow
+ * or its transactionally receipt-gated ordinary user creation.
  *
  * @example
  * ```typescript
@@ -12,13 +14,12 @@
  *   createFixedTenantStorageAdapter,
  *   resolveAuthTenantId,
  * } from "@tummycrypt/tinyland-auth/storage";
- * import { createNodePgStorageAdapter } from "@tummycrypt/tinyland-auth-pg";
+ * import { tenantScoped } from "./native-tenant-storage.js";
  *
  * const tenantId = resolveAuthTenantId({
  *   ELDERS_AUTH_TENANT_ID: process.env.ELDERS_AUTH_TENANT_ID,
  *   AUTH_TENANT_ID: process.env.AUTH_TENANT_ID,
  * });
- * const tenantScoped = createNodePgStorageAdapter({ connectionString });
  * const adapter = createFixedTenantStorageAdapter(tenantId, tenantScoped);
  * await adapter.init();
  * ```
@@ -34,6 +35,17 @@ import type {
   SessionMetadata,
 } from "../types/index.js";
 import type { AuditEventFilters, IStorageAdapter } from "./interface.js";
+import {
+  canonicalizeFirstUserBootstrapClaimResult,
+  canonicalizeFirstUserBootstrapFinalizationPayload,
+  canonicalizeInertFirstUserClaim,
+  normalizeFirstUserBootstrapTenantId,
+  parseFirstUserBootstrapReceiptForFinalization,
+  parseFirstUserBootstrapReceiptForTenant,
+  type FirstUserBootstrapFinalization,
+  type FirstUserBootstrapReceipt,
+  type InertFirstUserClaim,
+} from "./firstUserBootstrap.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -41,18 +53,41 @@ const UUID_RE =
 /**
  * Pattern B (multi-tenant) storage interface.
  *
- * Every method takes `tenantId` as its first parameter. Backends like
- * `@tummycrypt/tinyland-auth-pg` already implement this shape, so they
- * structurally satisfy this interface without explicit declaration.
+ * Every method takes `tenantId` as its first parameter. Existing PG/Redis
+ * adapters implement the legacy portion of this shape, but do not satisfy the
+ * unreleased 0.8 interface until their atomic bootstrap methods and
+ * transactionally receipt-gated `createUser` land and pass conformance.
  */
 export interface TenantScopedStorage {
   init(): Promise<void>;
   close(): Promise<void>;
 
+  /**
+   * These methods and `createUser` must be one backend-owned atomic protocol.
+   * A fixed-tenant wrapper only forwards them and cannot manufacture atomicity
+   * by composing receipt reads with ordinary user, factor, or backup-code
+   * writes.
+   */
+  claimFirstUserBootstrap(
+    tenantId: string,
+    claim: InertFirstUserClaim,
+  ): Promise<InertFirstUserClaim>;
+  finalizeFirstUserBootstrap(
+    tenantId: string,
+    finalization: FirstUserBootstrapFinalization,
+  ): Promise<FirstUserBootstrapReceipt>;
+  getFirstUserBootstrapReceipt(
+    tenantId: string,
+  ): Promise<FirstUserBootstrapReceipt | null>;
+
   getUser(tenantId: string, id: string): Promise<AdminUser | null>;
   getUserByHandle(tenantId: string, handle: string): Promise<AdminUser | null>;
   getUserByEmail(tenantId: string, email: string): Promise<AdminUser | null>;
   getAllUsers(tenantId: string): Promise<AdminUser[]>;
+  /**
+   * Atomically require this tenant's finalized first-user receipt and user,
+   * then insert an ordinary user in the same backend transaction.
+   */
   createUser(
     tenantId: string,
     user: Omit<AdminUser, "id" | "tenantId">,
@@ -187,6 +222,53 @@ class FixedTenantStorageAdapter implements IStorageAdapter {
     return this.storage.close();
   }
 
+  private assertRequestTenant(tenantId: string): string {
+    const normalizedTenantId = normalizeFirstUserBootstrapTenantId(tenantId);
+    if (normalizedTenantId !== this.tenantId) {
+      throw new Error(
+        `bootstrap tenant ${tenantId} does not match fixed tenant ${this.tenantId}`,
+      );
+    }
+    return normalizedTenantId;
+  }
+
+  claimFirstUserBootstrap(claim: InertFirstUserClaim) {
+    const canonicalClaim = canonicalizeInertFirstUserClaim(claim);
+    this.assertRequestTenant(canonicalClaim.tenantId);
+    return this.storage
+      .claimFirstUserBootstrap(this.tenantId, canonicalClaim)
+      .then((returned) =>
+        canonicalizeFirstUserBootstrapClaimResult(returned, canonicalClaim),
+      );
+  }
+  finalizeFirstUserBootstrap(finalization: FirstUserBootstrapFinalization) {
+    const canonicalFinalization =
+      canonicalizeFirstUserBootstrapFinalizationPayload(finalization);
+    this.assertRequestTenant(canonicalFinalization.tenantId);
+    const userTenantId = (canonicalFinalization.user as AdminUser & {
+      tenantId?: string;
+    }).tenantId;
+    if (userTenantId !== undefined) this.assertRequestTenant(userTenantId);
+    return this.storage
+      .finalizeFirstUserBootstrap(this.tenantId, canonicalFinalization)
+      .then((returned) =>
+        parseFirstUserBootstrapReceiptForFinalization(
+          returned,
+          canonicalFinalization,
+        ),
+      );
+  }
+  getFirstUserBootstrapReceipt(tenantId: string) {
+    const canonicalTenantId = this.assertRequestTenant(tenantId);
+    return this.storage
+      .getFirstUserBootstrapReceipt(this.tenantId)
+      .then((returned) =>
+        returned === null
+          ? null
+          : parseFirstUserBootstrapReceiptForTenant(returned, canonicalTenantId),
+      );
+  }
+
   getUser(id: string) {
     return this.storage.getUser(this.tenantId, id);
   }
@@ -306,6 +388,9 @@ class FixedTenantStorageAdapter implements IStorageAdapter {
  *
  * The returned adapter is a thin, stateless wrapper — every call delegates
  * to the underlying storage with `tenantId` injected as the first argument.
+ * The tenant-scoped backend itself must implement the atomic first-user
+ * bootstrap methods; this wrapper does not compose ordinary writes into an
+ * atomic transaction.
  */
 export function createFixedTenantStorageAdapter(
   tenantId: string,

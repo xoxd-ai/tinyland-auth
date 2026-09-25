@@ -49,12 +49,14 @@ vitest_bin.vitest_test(
     data = (
         glob(["src/**/*.ts"]) +
         glob(["tests/**/*.ts"]) +
+        glob(["tests/fixtures/**"]) +
         glob(["examples/**/*.ts"]) +
         glob(["docs/**/*.md"])
     ) + [
         ".github/workflows/ci.yml",
         ".github/workflows/publish.yml",
         "BUILD.bazel",
+        "CHANGELOG.md",
         "MODULE.bazel",
         "README.md",
         "scripts/check-invitation-authority.mjs",

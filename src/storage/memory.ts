@@ -21,6 +21,22 @@ import type {
   AdminInvitation,
   AuditEvent,
 } from '../types/auth.js';
+import {
+  FirstUserBootstrapConflictError,
+  canonicalizeFirstUserBootstrapFinalization,
+  canonicalizeFirstUserBootstrapFinalizationPayload,
+  canonicalizeInertFirstUserClaim,
+  canonicalizeStructuralInertFirstUserClaim,
+  cloneBootstrapValue,
+  createFirstUserBootstrapReceipt,
+  firstUserBootstrapMaterialDigest,
+  firstUserBootstrapValueDigest,
+  isExpiredInertFirstUserClaim,
+  normalizeFirstUserBootstrapTenantId,
+  type FirstUserBootstrapFinalization,
+  type FirstUserBootstrapReceipt,
+  type InertFirstUserClaim,
+} from './firstUserBootstrap.js';
 
 export class MemoryStorageAdapter implements IStorageAdapter {
   private users = new Map<string, AdminUser>();
@@ -31,6 +47,9 @@ export class MemoryStorageAdapter implements IStorageAdapter {
   private backupCodes = new Map<string, BackupCodeSet>();
   private invitations = new Map<string, AdminInvitation>();
   private auditEvents: AuditEvent[] = [];
+  private firstUserClaims = new Map<string, InertFirstUserClaim>();
+  private firstUserFinalizations = new Map<string, FirstUserBootstrapFinalization>();
+  private firstUserReceipts = new Map<string, FirstUserBootstrapReceipt>();
 
   async init(): Promise<void> {
     
@@ -46,6 +65,150 @@ export class MemoryStorageAdapter implements IStorageAdapter {
     this.backupCodes.clear();
     this.invitations.clear();
     this.auditEvents = [];
+    this.firstUserClaims.clear();
+    this.firstUserFinalizations.clear();
+    this.firstUserReceipts.clear();
+  }
+
+  async claimFirstUserBootstrap(
+    claim: InertFirstUserClaim,
+  ): Promise<InertFirstUserClaim> {
+    const structuralClaim = canonicalizeStructuralInertFirstUserClaim(claim);
+    if (this.firstUserReceipts.has(structuralClaim.tenantId)) {
+      throw new FirstUserBootstrapConflictError(
+        'First-user bootstrap is already finalized for this tenant',
+      );
+    }
+
+    const existing = this.firstUserClaims.get(structuralClaim.tenantId);
+    if (existing) {
+      if (
+        firstUserBootstrapValueDigest(existing) ===
+        firstUserBootstrapValueDigest(structuralClaim)
+      ) {
+        this.sessions.clear();
+        return cloneBootstrapValue(existing);
+      }
+      if (!isExpiredInertFirstUserClaim(existing)) {
+        throw new FirstUserBootstrapConflictError(
+          'A different first-user bootstrap claim already exists for this tenant',
+        );
+      }
+    }
+    const canonicalClaim = canonicalizeInertFirstUserClaim(structuralClaim);
+    if (this.firstUserClaims.size > (existing ? 1 : 0)) {
+      throw new FirstUserBootstrapConflictError(
+        'This memory storage instance already belongs to another bootstrap tenant',
+      );
+    }
+    if (this.users.size > 0) {
+      throw new FirstUserBootstrapConflictError(
+        'First-user bootstrap requires an empty user store',
+      );
+    }
+    if (
+      this.totpSecrets.has(canonicalClaim.actor.handle.toLowerCase()) ||
+      this.backupCodes.has(canonicalClaim.actor.id)
+    ) {
+      throw new FirstUserBootstrapConflictError(
+        'Claimed actor already has factor state',
+      );
+    }
+
+    this.sessions.clear();
+    const stored = cloneBootstrapValue(canonicalClaim);
+    this.firstUserClaims.set(canonicalClaim.tenantId, stored);
+    return cloneBootstrapValue(stored);
+  }
+
+  async finalizeFirstUserBootstrap(
+    finalization: FirstUserBootstrapFinalization,
+  ): Promise<FirstUserBootstrapReceipt> {
+    const payload = canonicalizeFirstUserBootstrapFinalizationPayload(finalization);
+    const existingReceipt = this.firstUserReceipts.get(payload.tenantId);
+    if (existingReceipt) {
+      const existingClaim = this.firstUserClaims.get(payload.tenantId);
+      const existingMaterial = this.firstUserFinalizations.get(payload.tenantId);
+      if (!existingClaim || !existingMaterial) {
+        throw new FirstUserBootstrapConflictError(
+          'Bootstrap completion state is internally inconsistent',
+        );
+      }
+      const canonicalReplay = canonicalizeFirstUserBootstrapFinalization(
+        existingClaim,
+        payload,
+        Date.parse(existingMaterial.finalizedAt),
+      );
+      if (
+        existingReceipt.attemptId === canonicalReplay.attemptId &&
+        existingReceipt.materialDigest ===
+          firstUserBootstrapMaterialDigest(canonicalReplay)
+      ) {
+        return cloneBootstrapValue(existingReceipt);
+      }
+      throw new FirstUserBootstrapConflictError(
+        'Bootstrap finalization conflicts with the immutable completion receipt',
+      );
+    }
+
+    const claim = this.firstUserClaims.get(payload.tenantId);
+    if (!claim) {
+      throw new FirstUserBootstrapConflictError(
+        'No active first-user bootstrap claim exists for this tenant',
+      );
+    }
+    const material = canonicalizeFirstUserBootstrapFinalization(claim, payload);
+    if (this.users.size > 0) {
+      throw new FirstUserBootstrapConflictError(
+        'First-user bootstrap requires an empty user store',
+      );
+    }
+
+    const receipt = createFirstUserBootstrapReceipt(claim, material);
+    this.users.set(material.user.id, cloneBootstrapValue(material.user));
+    this.usersByHandle.set(material.user.handle.toLowerCase(), material.user.id);
+    if (material.user.email) {
+      this.usersByEmail.set(material.user.email.toLowerCase(), material.user.id);
+    }
+    this.totpSecrets.set(
+      material.user.handle.toLowerCase(),
+      cloneBootstrapValue(material.totpSecret),
+    );
+    this.backupCodes.set(
+      material.user.id,
+      cloneBootstrapValue(material.backupCodes),
+    );
+    this.firstUserFinalizations.set(material.tenantId, cloneBootstrapValue(material));
+    this.firstUserReceipts.set(material.tenantId, cloneBootstrapValue(receipt));
+    return cloneBootstrapValue(receipt);
+  }
+
+  async getFirstUserBootstrapReceipt(
+    tenantId: string,
+  ): Promise<FirstUserBootstrapReceipt | null> {
+    const receipt = this.firstUserReceipts.get(
+      normalizeFirstUserBootstrapTenantId(tenantId),
+    );
+    return receipt ? cloneBootstrapValue(receipt) : null;
+  }
+
+  private getClaimedTenantForActor(
+    actorId?: string,
+    handle?: string,
+  ): string | null {
+    for (const [tenantId, claim] of this.firstUserClaims) {
+      if (
+        (actorId !== undefined && claim.actor.id === actorId) ||
+        (handle !== undefined && claim.actor.handle.toLowerCase() === handle.toLowerCase())
+      ) {
+        return tenantId;
+      }
+    }
+    return null;
+  }
+
+  private isFinalizedTenant(tenantId: string): boolean {
+    return this.firstUserReceipts.has(tenantId);
   }
 
   
@@ -53,36 +216,57 @@ export class MemoryStorageAdapter implements IStorageAdapter {
   
 
   async getUser(id: string): Promise<AdminUser | null> {
-    return this.users.get(id) || null;
+    const user = this.users.get(id);
+    return user ? cloneBootstrapValue(user) : null;
   }
 
   async getUserByHandle(handle: string): Promise<AdminUser | null> {
     const userId = this.usersByHandle.get(handle.toLowerCase());
     if (!userId) return null;
-    return this.users.get(userId) || null;
+    const user = this.users.get(userId);
+    return user ? cloneBootstrapValue(user) : null;
   }
 
   async getUserByEmail(email: string): Promise<AdminUser | null> {
     const userId = this.usersByEmail.get(email.toLowerCase());
     if (!userId) return null;
-    return this.users.get(userId) || null;
+    const user = this.users.get(userId);
+    return user ? cloneBootstrapValue(user) : null;
   }
 
   async getAllUsers(): Promise<AdminUser[]> {
-    return Array.from(this.users.values());
+    return Array.from(this.users.values(), (user) => cloneBootstrapValue(user));
   }
 
   async createUser(user: Omit<AdminUser, 'id'>): Promise<AdminUser> {
+    if (
+      Array.from(this.firstUserClaims.keys()).some(
+        (tenantId) => !this.isFinalizedTenant(tenantId),
+      )
+    ) {
+      throw new FirstUserBootstrapConflictError(
+        'Cannot create a user while a first-user bootstrap claim is active',
+      );
+    }
+    const bootstrapReceipt =
+      this.firstUserReceipts.size === 1
+        ? this.firstUserReceipts.values().next().value
+        : undefined;
+    if (!bootstrapReceipt || !this.users.has(bootstrapReceipt.userId)) {
+      throw new FirstUserBootstrapConflictError(
+        'Ordinary user creation requires a finalized first-user bootstrap receipt',
+      );
+    }
     const id = randomUUID();
     const newUser: AdminUser = { ...user, id };
 
-    this.users.set(id, newUser);
+    this.users.set(id, cloneBootstrapValue(newUser));
     this.usersByHandle.set(newUser.handle.toLowerCase(), id);
     if (newUser.email) {
       this.usersByEmail.set(newUser.email.toLowerCase(), id);
     }
 
-    return newUser;
+    return cloneBootstrapValue(newUser);
   }
 
   async updateUser(id: string, updates: Partial<AdminUser>): Promise<AdminUser> {
@@ -110,24 +294,32 @@ export class MemoryStorageAdapter implements IStorageAdapter {
       updatedAt: new Date().toISOString(),
     };
 
-    this.users.set(id, updatedUser);
-    return updatedUser;
+    this.users.set(id, cloneBootstrapValue(updatedUser));
+    return cloneBootstrapValue(updatedUser);
   }
 
   async deleteUser(id: string): Promise<boolean> {
+    const bootstrapTenant = this.getClaimedTenantForActor(id);
+    if (bootstrapTenant) {
+      throw new FirstUserBootstrapConflictError(
+        this.isFinalizedTenant(bootstrapTenant)
+          ? 'Cannot delete a bootstrap-finalized actor'
+          : 'Cannot delete a claimed first-user actor',
+      );
+    }
+
     const user = this.users.get(id);
     if (!user) return false;
+
+    await this.deleteUserSessions(id);
+    await this.deleteTOTPSecret(user.handle);
+    await this.deleteBackupCodes(id);
 
     this.users.delete(id);
     this.usersByHandle.delete(user.handle.toLowerCase());
     if (user.email) {
       this.usersByEmail.delete(user.email.toLowerCase());
     }
-
-    
-    await this.deleteUserSessions(id);
-    await this.deleteTOTPSecret(user.handle);
-    await this.deleteBackupCodes(id);
 
     return true;
   }
@@ -150,17 +342,20 @@ export class MemoryStorageAdapter implements IStorageAdapter {
       return null;
     }
 
-    return session;
+    return cloneBootstrapValue(session);
   }
 
   async getSessionsByUser(userId: string): Promise<Session[]> {
     const now = new Date();
     return Array.from(this.sessions.values())
-      .filter(s => s.userId === userId && new Date(s.expires) > now);
+      .filter(s => s.userId === userId && new Date(s.expires) > now)
+      .map((session) => cloneBootstrapValue(session));
   }
 
   async getAllSessions(): Promise<Session[]> {
-    return Array.from(this.sessions.values());
+    return Array.from(this.sessions.values()).map((session) =>
+      cloneBootstrapValue(session),
+    );
   }
 
   async createSession(
@@ -168,6 +363,19 @@ export class MemoryStorageAdapter implements IStorageAdapter {
     user: Partial<AdminUser>,
     metadata?: SessionMetadata
   ): Promise<Session> {
+    if (user.id !== undefined && user.id !== userId) {
+      throw new FirstUserBootstrapConflictError(
+        'Session user identity does not match userId',
+      );
+    }
+    const hasActiveBootstrapClaim = Array.from(this.firstUserClaims.keys()).some(
+      (tenantId) => !this.isFinalizedTenant(tenantId),
+    );
+    if (hasActiveBootstrapClaim) {
+      throw new FirstUserBootstrapConflictError(
+        'session authority is unavailable while first-user bootstrap is claimed',
+      );
+    }
     const id = randomUUID();
     const now = new Date();
     const expires = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); 
@@ -194,8 +402,8 @@ export class MemoryStorageAdapter implements IStorageAdapter {
       geoLocation: metadata?.geoLocation,
     };
 
-    this.sessions.set(id, session);
-    return session;
+    this.sessions.set(id, cloneBootstrapValue(session));
+    return cloneBootstrapValue(session);
   }
 
   async updateSession(id: string, updates: Partial<Session>): Promise<Session> {
@@ -204,14 +412,30 @@ export class MemoryStorageAdapter implements IStorageAdapter {
       throw new Error(`Session ${id} not found`);
     }
 
+    if (updates.userId !== undefined && updates.userId !== session.userId) {
+      throw new FirstUserBootstrapConflictError(
+        'Session user identity is immutable',
+      );
+    }
+    const currentNestedUserId = session.user?.id ?? session.userId;
+    if (
+      updates.user?.id !== undefined &&
+      updates.user.id !== currentNestedUserId
+    ) {
+      throw new FirstUserBootstrapConflictError(
+        'Nested session user identity is immutable',
+      );
+    }
+
     const updatedSession: Session = {
       ...session,
-      ...updates,
-      id, 
+      ...cloneBootstrapValue(updates),
+      id,
+      userId: session.userId,
     };
 
-    this.sessions.set(id, updatedSession);
-    return updatedSession;
+    this.sessions.set(id, cloneBootstrapValue(updatedSession));
+    return cloneBootstrapValue(updatedSession);
   }
 
   async deleteSession(id: string): Promise<boolean> {
@@ -246,14 +470,27 @@ export class MemoryStorageAdapter implements IStorageAdapter {
   
 
   async getTOTPSecret(handle: string): Promise<EncryptedTOTPSecret | null> {
-    return this.totpSecrets.get(handle.toLowerCase()) || null;
+    const secret = this.totpSecrets.get(handle.toLowerCase());
+    return secret ? cloneBootstrapValue(secret) : null;
   }
 
   async saveTOTPSecret(handle: string, secret: EncryptedTOTPSecret): Promise<void> {
-    this.totpSecrets.set(handle.toLowerCase(), secret);
+    const bootstrapTenant = this.getClaimedTenantForActor(secret.userId, handle);
+    if (bootstrapTenant && !this.isFinalizedTenant(bootstrapTenant)) {
+      throw new FirstUserBootstrapConflictError(
+        'Cannot enroll TOTP for a claimed actor before finalization',
+      );
+    }
+    this.totpSecrets.set(handle.toLowerCase(), cloneBootstrapValue(secret));
   }
 
   async deleteTOTPSecret(handle: string): Promise<boolean> {
+    const bootstrapTenant = this.getClaimedTenantForActor(undefined, handle);
+    if (bootstrapTenant) {
+      throw new FirstUserBootstrapConflictError(
+        'Cannot delete a claimed or bootstrap-finalized TOTP factor',
+      );
+    }
     return this.totpSecrets.delete(handle.toLowerCase());
   }
 
@@ -262,14 +499,27 @@ export class MemoryStorageAdapter implements IStorageAdapter {
   
 
   async getBackupCodes(userId: string): Promise<BackupCodeSet | null> {
-    return this.backupCodes.get(userId) || null;
+    const codes = this.backupCodes.get(userId);
+    return codes ? cloneBootstrapValue(codes) : null;
   }
 
   async saveBackupCodes(userId: string, codes: BackupCodeSet): Promise<void> {
-    this.backupCodes.set(userId, codes);
+    const bootstrapTenant = this.getClaimedTenantForActor(userId);
+    if (bootstrapTenant && !this.isFinalizedTenant(bootstrapTenant)) {
+      throw new FirstUserBootstrapConflictError(
+        'Cannot save backup codes for a claimed actor before finalization',
+      );
+    }
+    this.backupCodes.set(userId, cloneBootstrapValue(codes));
   }
 
   async deleteBackupCodes(userId: string): Promise<boolean> {
+    const bootstrapTenant = this.getClaimedTenantForActor(userId);
+    if (bootstrapTenant) {
+      throw new FirstUserBootstrapConflictError(
+        'Cannot delete claimed or bootstrap-finalized backup codes',
+      );
+    }
     return this.backupCodes.delete(userId);
   }
 

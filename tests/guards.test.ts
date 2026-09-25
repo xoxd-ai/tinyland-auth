@@ -203,7 +203,7 @@ describe('requireAuth', () => {
 describe('requireRole', () => {
   it('should pass when user has sufficient role', () => {
     const session = createMockSession({
-      user: { id: 'user-1', username: 'admin', name: 'Admin', role: 'admin' },
+      user: { id: 'user-456', username: 'admin', name: 'Admin', role: 'admin' },
     });
     const user = createMockUser({ role: 'admin' });
     const locals = createMockLocals({ session, user });
@@ -214,7 +214,7 @@ describe('requireRole', () => {
 
   it('should pass when user has exact role', () => {
     const session = createMockSession({
-      user: { id: 'user-1', username: 'editor', name: 'Editor', role: 'editor' },
+      user: { id: 'user-456', username: 'editor', name: 'Editor', role: 'editor' },
     });
     const user = createMockUser({ role: 'editor' });
     const locals = createMockLocals({ session, user });
@@ -225,7 +225,7 @@ describe('requireRole', () => {
 
   it('should throw error when user has insufficient role', () => {
     const session = createMockSession({
-      user: { id: 'user-1', username: 'viewer', name: 'Viewer', role: 'viewer' },
+      user: { id: 'user-456', username: 'viewer', name: 'Viewer', role: 'viewer' },
     });
     const user = createMockUser({ role: 'viewer' });
     const locals = createMockLocals({ session, user });
@@ -253,7 +253,7 @@ describe('requireRole', () => {
 
   it('should use custom error message', () => {
     const session = createMockSession({
-      user: { id: 'user-1', username: 'viewer', name: 'Viewer', role: 'viewer' },
+      user: { id: 'user-456', username: 'viewer', name: 'Viewer', role: 'viewer' },
     });
     const locals = createMockLocals({ session });
 
@@ -269,7 +269,7 @@ describe('requireRole', () => {
 
   it('should allow super_admin for any role requirement', () => {
     const session = createMockSession({
-      user: { id: 'user-1', username: 'superadmin', name: 'SA', role: 'super_admin' },
+      user: { id: 'user-456', username: 'superadmin', name: 'SA', role: 'super_admin' },
     });
     const user = createMockUser({ role: 'super_admin' });
     const locals = createMockLocals({ session, user });
@@ -278,6 +278,27 @@ describe('requireRole', () => {
     expect(() => requireRole(locals, 'admin')).not.toThrow();
     expect(() => requireRole(locals, 'moderator')).not.toThrow();
     expect(() => requireRole(locals, 'viewer')).not.toThrow();
+  });
+
+  it('rejects an embedded super_admin claim without an authoritative user', () => {
+    const session = createMockSession({
+      userId: 'pre-bootstrap-session-user',
+      user: {
+        id: 'pre-bootstrap-session-user',
+        username: 'prebootstrap',
+        name: 'Pre-bootstrap Session',
+        role: 'super_admin',
+      },
+    });
+    const locals = createMockLocals({ session, user: null });
+
+    try {
+      requireRole(locals, 'admin');
+      expect.fail('Embedded pre-bootstrap role claim should not authorize');
+    } catch (err) {
+      expect(isHttpError(err)).toBe(true);
+      if (isHttpError(err)) expect(err.status).toBe(403);
+    }
   });
 });
 
@@ -341,7 +362,7 @@ describe('checkAuth', () => {
 
   it('should check role requirement', async () => {
     const session = createMockSession({
-      user: { id: 'user-1', username: 'viewer', name: 'Viewer', role: 'viewer' },
+      user: { id: 'user-456', username: 'viewer', name: 'Viewer', role: 'viewer' },
     });
     const locals = createMockLocals({ session });
 
@@ -352,13 +373,31 @@ describe('checkAuth', () => {
 
   it('should pass role check with sufficient role', async () => {
     const session = createMockSession({
-      user: { id: 'user-1', username: 'admin', name: 'Admin', role: 'admin' },
+      user: { id: 'user-456', username: 'admin', name: 'Admin', role: 'admin' },
     });
     const user = createMockUser({ role: 'admin' });
     const locals = createMockLocals({ session, user });
 
     const result = await checkAuth(locals, { requiredRole: 'editor' });
     expect(result.allowed).toBe(true);
+  });
+
+  it('uses the loaded user role instead of a conflicting embedded role', async () => {
+    const session = createMockSession({
+      user: {
+        id: 'user-456',
+        username: 'forged-admin',
+        name: 'Forged Admin',
+        role: 'super_admin',
+      },
+    });
+    const user = createMockUser({ role: 'viewer' });
+    const locals = createMockLocals({ session, user });
+
+    await expect(checkAuth(locals, { requiredRole: 'admin' })).resolves.toMatchObject({
+      allowed: false,
+      error: expect.stringMatching(/admin/),
+    });
   });
 
   it('should use custom login URL', async () => {
@@ -395,7 +434,7 @@ describe('protectEndpoint', () => {
 
   it('should throw 403 when role is insufficient', () => {
     const session = createMockSession({
-      user: { id: 'user-1', username: 'viewer', name: 'Viewer', role: 'viewer' },
+      user: { id: 'user-456', username: 'viewer', name: 'Viewer', role: 'viewer' },
     });
     const event = createMockRequestEvent({ session });
 
@@ -411,7 +450,7 @@ describe('protectEndpoint', () => {
 
   it('should pass with sufficient role', () => {
     const session = createMockSession({
-      user: { id: 'user-1', username: 'admin', name: 'Admin', role: 'super_admin' },
+      user: { id: 'user-456', username: 'admin', name: 'Admin', role: 'super_admin' },
     });
     const user = createMockUser({ role: 'super_admin' });
     const event = createMockRequestEvent({ session, user });
@@ -424,9 +463,10 @@ describe('protectEndpoint', () => {
 describe('canManageTargetRole', () => {
   it('should return true when current user can manage target role', () => {
     const session = createMockSession({
-      user: { id: 'user-1', username: 'admin', name: 'Admin', role: 'super_admin' },
+      user: { id: 'user-456', username: 'admin', name: 'Admin', role: 'super_admin' },
     });
-    const locals = createMockLocals({ session });
+    const user = createMockUser({ role: 'super_admin' });
+    const locals = createMockLocals({ session, user });
 
     expect(canManageTargetRole(locals, 'admin')).toBe(true);
     expect(canManageTargetRole(locals, 'viewer')).toBe(true);
@@ -434,9 +474,10 @@ describe('canManageTargetRole', () => {
 
   it('should return false when current user cannot manage target role', () => {
     const session = createMockSession({
-      user: { id: 'user-1', username: 'viewer', name: 'Viewer', role: 'viewer' },
+      user: { id: 'user-456', username: 'viewer', name: 'Viewer', role: 'viewer' },
     });
-    const locals = createMockLocals({ session });
+    const user = createMockUser({ role: 'viewer' });
+    const locals = createMockLocals({ session, user });
 
     expect(canManageTargetRole(locals, 'admin')).toBe(false);
     expect(canManageTargetRole(locals, 'viewer')).toBe(false);
@@ -468,7 +509,7 @@ describe('Guard Role Hierarchy', () => {
 
         const session = createMockSession({
           user: {
-            id: 'user-1',
+            id: 'user-456',
             username: currentRole,
             name: currentRole,
             role: currentRole,
@@ -490,7 +531,7 @@ describe('Guard Role Hierarchy', () => {
 
       const session = createMockSession({
         user: {
-          id: 'user-1',
+          id: 'user-456',
           username: currentRole,
           name: currentRole,
           role: currentRole,

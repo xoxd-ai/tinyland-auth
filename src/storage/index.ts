@@ -6,6 +6,7 @@
 
 export {
   type IStorageAdapter,
+  type AtomicFirstUserBootstrapStorage,
   type AdminIdentityStorage,
   type BootstrapStorage,
   type HandleValidationStorage,
@@ -16,6 +17,32 @@ export {
   type AuditEventFilters,
   type StorageAdapterConfig,
 } from './interface.js';
+
+export {
+  FIRST_USER_BOOTSTRAP_CLAIM_MAX_AGE_MS,
+  FirstUserBootstrapConflictError,
+  FirstUserBootstrapValidationError,
+  assertValidFirstUserBootstrapFinalization,
+  createFirstUserBootstrapReceipt,
+  firstUserBootstrapMaterialDigest,
+  isExpiredInertFirstUserClaim,
+  isStructurallyValidInertFirstUserClaim,
+  isValidInertFirstUserClaim,
+  parseFirstUserBootstrapReceipt,
+  type FirstUserBootstrapFinalization,
+  type FirstUserBootstrapReceipt,
+  type FirstUserBootstrapReceiptExpectation,
+  type InertFirstUserActorClaim,
+  type InertFirstUserClaim,
+} from './firstUserBootstrap.js';
+
+export {
+  FirstUserBootstrapConformanceError,
+  runFirstUserBootstrapStorageConformance,
+  type FirstUserBootstrapConformanceHarness,
+  type FirstUserBootstrapConformanceHarnessFactory,
+  type FirstUserBootstrapConformanceResult,
+} from './conformance.js';
 
 export { MemoryStorageAdapter } from './memory.js';
 

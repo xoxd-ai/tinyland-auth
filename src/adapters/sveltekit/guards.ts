@@ -47,6 +47,16 @@ export function getUserFromLocals(locals: App.Locals): AdminUser | null {
   return (locals as unknown as { user?: AdminUser }).user || null;
 }
 
+function getAuthoritativeUserFromLocals(
+  locals: App.Locals,
+  session: Session,
+): AdminUser | null {
+  const user = getUserFromLocals(locals);
+  if (!user || user.id !== session.userId) return null;
+  if (session.user && session.user.id !== session.userId) return null;
+  return user;
+}
+
 
 
 
@@ -78,9 +88,10 @@ export function requireRole(
   requiredRole: AdminRole,
   options: GuardOptions = {}
 ): { session: Session; user?: AdminUser } {
-  const { session, user } = requireAuth(locals, options);
+  const { session } = requireAuth(locals, options);
+  const user = getAuthoritativeUserFromLocals(locals, session);
 
-  const userRole = session.user?.role as AdminRole | undefined;
+  const userRole = user?.role;
   if (!userRole || !hasEqualOrHigherRole(userRole, requiredRole)) {
     throw error(403, options.errorMessage || `Role ${requiredRole} or higher required`);
   }
@@ -99,7 +110,7 @@ export function requirePermission(
   options: GuardOptions = {}
 ): { session: Session; user: AdminUser } {
   const { session } = requireAuth(locals, options);
-  const user = getUserFromLocals(locals);
+  const user = getAuthoritativeUserFromLocals(locals, session);
 
   if (!user || !hasPermission(user, permission)) {
     throw error(403, options.errorMessage || `Permission ${permission} required`);
@@ -131,9 +142,11 @@ export function canManageTargetRole(
   targetRole: AdminRole
 ): boolean {
   const session = getSessionFromLocals(locals);
-  if (!session?.user?.role) return false;
+  if (!session) return false;
+  const user = getAuthoritativeUserFromLocals(locals, session);
+  if (!user) return false;
 
-  return canManageRole(session.user.role as AdminRole, targetRole);
+  return canManageRole(user.role, targetRole);
 }
 
 
@@ -159,9 +172,11 @@ export async function checkAuth(
     };
   }
 
+  const user = getAuthoritativeUserFromLocals(locals, session);
+
   
   if (options.requiredRole) {
-    const userRole = session.user?.role as AdminRole | undefined;
+    const userRole = user?.role;
     if (!userRole || !hasEqualOrHigherRole(userRole, options.requiredRole)) {
       return {
         allowed: false,
@@ -173,7 +188,6 @@ export async function checkAuth(
 
   
   if (options.requiredPermission) {
-    const user = getUserFromLocals(locals);
     if (!user || !hasPermission(user, options.requiredPermission)) {
       return {
         allowed: false,
@@ -186,7 +200,7 @@ export async function checkAuth(
   return {
     allowed: true,
     session,
-    user: getUserFromLocals(locals) || undefined,
+    user: user || undefined,
   };
 }
 
@@ -208,19 +222,20 @@ export function protectEndpoint(
     throw error(401, 'Authentication required');
   }
 
+  const user = getAuthoritativeUserFromLocals(event.locals, session);
+
   if (options.requiredRole) {
-    const userRole = session.user?.role as AdminRole | undefined;
+    const userRole = user?.role;
     if (!userRole || !hasEqualOrHigherRole(userRole, options.requiredRole)) {
       throw error(403, `Role ${options.requiredRole} or higher required`);
     }
   }
 
   if (options.requiredPermission) {
-    const user = getUserFromLocals(event.locals);
     if (!user || !hasPermission(user, options.requiredPermission)) {
       throw error(403, `Permission ${options.requiredPermission} required`);
     }
   }
 
-  return { session, user: getUserFromLocals(event.locals) || undefined };
+  return { session, user: user || undefined };
 }

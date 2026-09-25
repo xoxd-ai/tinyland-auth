@@ -10,6 +10,7 @@ import { SessionManager, createSessionManager, classifyDevice, extractBrowserInf
 import { MemoryStorageAdapter } from '../src/storage/memory.js';
 import type { SessionConfig } from '../src/types/config.js';
 import type { Session, AdminUser, SessionMetadata } from '../src/types/auth.js';
+import { makeClaim, makeFinalization } from './storage-conformance.js';
 
 
 const testSessionConfig: SessionConfig = {
@@ -53,7 +54,9 @@ describe('SessionManager', () => {
     await storage.init();
     sessionManager = new SessionManager({ storage, config: testSessionConfig });
 
-    
+    const claim = makeClaim();
+    await storage.claimFirstUserBootstrap(claim);
+    await storage.finalizeFirstUserBootstrap(makeFinalization(claim));
     const user = await storage.createUser(testUser);
     userId = user.id;
   });

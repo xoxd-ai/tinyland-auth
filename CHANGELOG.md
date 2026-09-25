@@ -1,5 +1,59 @@
 # @tummycrypt/tinyland-auth
 
+## Unreleased
+
+### Major Changes
+
+- Add a tenant-scoped atomic first-user bootstrap storage contract for memory,
+  file, fixed-tenant, and external adapters. Inert claims carry no authority;
+  exact finalization replay is idempotent, mismatched replay conflicts, and an
+  immutable receipt remains separate from mutable user/TOTP/backup-code state.
+  Canonical claim/finalization/receipt helpers and a framework-neutral storage
+  conformance runner define the future durable-adapter contract. The built-in
+  memory and file adapters implement this unreleased source contract;
+  `createFixedTenantStorageAdapter` can only forward it to a backend that has
+  a native implementation. The current PostgreSQL and Redis adapters do not
+  implement it and are unsupported for atomic first-user bootstrap.
+- Reject unknown, missing, non-canonical, sparse, and non-JSON bootstrap
+  claim/finalization material before authority writes or replay comparison.
+  Canonical replay encoding rejects `-0`, non-finite numbers, `undefined`,
+  functions, symbols, and bigint values instead of collapsing them.
+- Bind file records to their normalized tenant filename and replace automatic
+  PID-based lock takeover with a bounded, constant-space two-slot protocol.
+  Release stages and publishes hard links to a privately held owner inode, then
+  performs no pathname read or delete; the next owner compacts only the prior
+  released slot. Retry waits are
+  deadline-clamped, ordinary contention is retryable, and only ambiguous
+  ownership state requires attended recovery.
+- Harden user deletion so bootstrap actors cannot be removed and ordinary file
+  users are disabled and have sessions revoked before destructive writes.
+- Reconcile persisted 0.7 file stores without bootstrap receipts when exactly
+  one active, unlocked `super_admin` identifies legacy ownership. The adapter
+  atomically records that immutable migration marker before allowing ordinary
+  user creation; missing or ambiguous ownership remains fail-closed.
+- Replace `BootstrapService`'s credential-bearing browser state and composed
+  writes with an opaque attempt reference, explicit server-side attempt
+  custody, finalized-metadata/decryptability status, encrypted-factor
+  round-trip validation, and the atomic storage finalization protocol. Attempt
+  custody now expires prepared state, rejects stale profile snapshots with a
+  digest CAS, enforces the exact ten-minute claim lifetime without expiry skew,
+  and never
+  re-discloses pending credentials from receipt replay. A framework-neutral
+  attempt-store conformance runner makes those CAS rules reusable. Session
+  identity is immutable so an active claim cannot be bypassed by rebinding an
+  old session. Claim acceptance now revokes every pre-bootstrap session and
+  blocks new sessions until finalization; role and permission guards require a
+  matching storage-loaded user instead of trusting an embedded session role.
+  TOTP verification accepts synchronous or asynchronous verifiers, awaits the
+  result, and requires the exact value `true`; verifier rejection fails closed.
+  A delayed exact `complete()` racing a winner re-reads the immutable receipt
+  after asynchronous verification/encryption and replays the committed success
+  even when the winner already deleted attempt custody.
+  Downstream initiation remains operator-only and must be protected by a local
+  or private administrative gate.
+  This is a breaking, source-only 0.8 contract. It does not claim a 0.8
+  release, registry promotion, PostgreSQL/Redis support, or consumer adoption.
+
 ## 0.7.1
 
 ### Patch Changes

@@ -15,6 +15,7 @@ import {
 } from '../src/validation/handle-validator.js';
 import { MemoryStorageAdapter } from '../src/storage/index.js';
 import { hashPassword } from '../src/core/security/password.js';
+import { makeClaim, makeFinalization } from './storage-conformance.js';
 
 function createTestConfig(storage?: MemoryStorageAdapter): HandleValidatorConfig {
   return {
@@ -25,7 +26,25 @@ function createTestConfig(storage?: MemoryStorageAdapter): HandleValidatorConfig
 }
 
 async function createTestUser(storage: MemoryStorageAdapter, handle: string, password: string) {
-  const passwordHash = await hashPassword(password, { rounds: 4 }); 
+  const passwordHash = await hashPassword(password, { rounds: 4 });
+  if (!(await storage.hasUsers())) {
+    const baseClaim = makeClaim();
+    const claim = makeClaim({
+      attemptId: `bootstrap-attempt-${handle}`,
+      actor: {
+        ...baseClaim.actor,
+        id: `bootstrap-user-${handle}`,
+        handle,
+      },
+      claimedAt: new Date().toISOString(),
+    });
+    const finalization = makeFinalization(claim);
+    finalization.user.email = `${handle}@example.com`;
+    finalization.user.passwordHash = passwordHash;
+    await storage.claimFirstUserBootstrap(claim);
+    await storage.finalizeFirstUserBootstrap(finalization);
+    return;
+  }
   await storage.createUser({
     handle,
     email: `${handle}@example.com`,
@@ -38,6 +57,10 @@ async function createTestUser(storage: MemoryStorageAdapter, handle: string, pas
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
+}
+
+async function bootstrapTestAuthority(storage: MemoryStorageAdapter): Promise<void> {
+  await createTestUser(storage, 'bootstrap_admin', 'bootstrap-password');
 }
 
 describe('Handle Validator', () => {
@@ -73,6 +96,7 @@ describe('Handle Validator', () => {
     });
 
     it('should reject an inactive user', async () => {
+      await bootstrapTestAuthority(storage);
       const passwordHash = await hashPassword('password', { rounds: 4 });
       await storage.createUser({
         handle: 'inactiveuser',
@@ -105,6 +129,10 @@ describe('Handle Validator', () => {
   });
 
   describe('addHandle', () => {
+    beforeEach(async () => {
+      await bootstrapTestAuthority(storage);
+    });
+
     it('should add a new handle successfully', async () => {
       const result = await addHandle('newuser', 'SecurePass123!', config);
       expect(result).toBe(true);
@@ -149,6 +177,10 @@ describe('Handle Validator', () => {
   });
 
   describe('removeHandle', () => {
+    beforeEach(async () => {
+      await bootstrapTestAuthority(storage);
+    });
+
     it('should remove an existing handle', async () => {
       await createTestUser(storage, 'removeme', 'password');
 

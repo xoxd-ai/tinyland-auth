@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import {
   AdminRole,
   createAuthConfig,
@@ -9,6 +10,8 @@ import {
   TOTPService,
   verifyBackupCode,
   type AdminUser,
+  type FirstUserBootstrapFinalization,
+  type InertFirstUserClaim,
   type SessionMetadata,
 } from '../src/index.js';
 
@@ -36,6 +39,7 @@ export interface TinylandDatabaselessAuthMvpResult {
 }
 
 const ENCRYPTION_KEY = 'tinyland-auth-mvp-demo-key-32-chars';
+const DEMO_TENANT_ID = '12345678-1234-4123-8123-123456789abc';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -48,25 +52,6 @@ function sessionMetadata(evidence?: FingerprintEvidence): SessionMetadata {
     userAgent: 'TinylandAuthMvp/1.0',
     deviceType: 'desktop',
     browserFingerprint: evidence?.visitorId,
-  };
-}
-
-function handleOnlyUser(
-  fields: Pick<AdminUser, 'handle' | 'displayName' | 'role'>,
-): Omit<AdminUser, 'id'> {
-  const timestamp = nowIso();
-
-  return {
-    handle: fields.handle,
-    displayName: fields.displayName,
-    passwordHash: '',
-    totpEnabled: false,
-    role: fields.role,
-    isActive: true,
-    needsOnboarding: false,
-    onboardingStep: 0,
-    createdAt: timestamp,
-    updatedAt: timestamp,
   };
 }
 
@@ -92,42 +77,79 @@ export async function runTinylandDatabaselessAuthMvp(): Promise<TinylandDatabase
     issuer: 'Tinyland Auth MVP',
   });
 
-  const adminDraft = handleOnlyUser({
-    handle: 'jesssullivan',
-    displayName: 'Jess Sullivan',
-    role: AdminRole.SUPER_ADMIN,
-  });
-  adminDraft.passwordHash = await hashPassword('correct horse battery staple', {
+  const claim: InertFirstUserClaim = {
+    version: 1,
+    tenantId: DEMO_TENANT_ID,
+    attemptId: randomUUID(),
+    actor: {
+      id: randomUUID(),
+      handle: 'jesssullivan',
+      isActive: false,
+      totpEnabled: false,
+      sessionAuthority: false,
+      backupCodesGenerated: false,
+    },
+    claimedAt: nowIso(),
+  };
+  await storage.claimFirstUserBootstrap(claim);
+
+  const passwordHash = await hashPassword('correct horse battery staple', {
     rounds: 4,
   });
-  adminDraft.totpEnabled = true;
-
-  const admin = await storage.createUser(adminDraft);
-
-  const totpSecret = await totpService.generateSecret(admin.handle);
+  const totpSecret = await totpService.generateSecret(claim.actor.handle);
   const totpToken = totpService.generateToken(totpSecret);
   const totpVerified = await totpService.verifyToken(totpSecret, totpToken);
   const encryptedTotp = totpService.encrypt(totpSecret.secret);
-
-  await storage.saveTOTPSecret(admin.handle, {
-    userId: admin.id,
-    handle: admin.handle,
-    encryptedSecret: encryptedTotp.encrypted,
-    iv: encryptedTotp.iv,
-    authTag: encryptedTotp.tag,
-    salt: encryptedTotp.salt,
-    createdAt: nowIso(),
-    backupCodesGenerated: false,
+  const plainBackupCodes = generateBackupCodes(3);
+  const backupCodeSet = createBackupCodeSet(claim.actor.id, plainBackupCodes);
+  const finalizedAt = nowIso();
+  const finalization: FirstUserBootstrapFinalization = {
     version: 1,
-  });
+    tenantId: claim.tenantId,
+    attemptId: claim.attemptId,
+    finalizedAt,
+    user: {
+      id: claim.actor.id,
+      handle: claim.actor.handle,
+      displayName: 'Jess Sullivan',
+      passwordHash,
+      totpEnabled: true,
+      totpSecretId: claim.actor.handle,
+      role: AdminRole.SUPER_ADMIN,
+      isActive: true,
+      needsOnboarding: false,
+      onboardingStep: 0,
+      createdAt: claim.claimedAt,
+      updatedAt: finalizedAt,
+    },
+    totpSecret: {
+      userId: claim.actor.id,
+      handle: claim.actor.handle,
+      encryptedSecret: encryptedTotp.encrypted,
+      iv: encryptedTotp.iv,
+      authTag: encryptedTotp.tag,
+      salt: encryptedTotp.salt,
+      createdAt: finalizedAt,
+      backupCodesGenerated: true,
+      version: 1,
+    },
+    backupCodes: {
+      ...backupCodeSet,
+      generatedAt: finalizedAt,
+    },
+  };
+  await storage.finalizeFirstUserBootstrap(finalization);
+
+  const admin = await storage.getUser(claim.actor.id);
+  if (!admin) {
+    throw new Error('MVP failed to finalize the first user');
+  }
 
   const storedTotp = await storage.getTOTPSecret(admin.handle);
   if (!storedTotp) {
     throw new Error('MVP failed to store TOTP secret');
   }
 
-  const plainBackupCodes = generateBackupCodes(3);
-  const backupCodeSet = createBackupCodeSet(admin.id, plainBackupCodes);
   const backupVerification = verifyBackupCode(
     backupCodeSet,
     plainBackupCodes[0] ?? '',
