@@ -32,6 +32,8 @@ locked publint without npm/pnpm packing. See the
 
 - `.` — core auth: session management, password hashing, permissions, RBAC
 - `./sveltekit` — SvelteKit integration: hooks, guards, CSRF, session cookies
+- `./sveltekit/server` — server-only hooks, guards, cookies and ownership checks;
+  excludes client rune stores and can be imported by plain Node consumers
 - `./storage` — storage adapter interface + memory/file implementations
 - `./types` — TypeScript type definitions
 - `./totp` — TOTP generation and verification

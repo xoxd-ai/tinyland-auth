@@ -17,6 +17,10 @@
       "types": "./dist/adapters/sveltekit/index.d.ts",
       "import": "./dist/adapters/sveltekit/index.js"
     },
+    "./sveltekit/server": {
+      "types": "./dist/adapters/sveltekit/server.d.ts",
+      "import": "./dist/adapters/sveltekit/server.js"
+    },
     "./storage": {
       "types": "./dist/storage/index.d.ts",
       "import": "./dist/storage/index.js"

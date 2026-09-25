@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { publint } from 'publint';
 
 // Run as //:package_artifact_test with the real //:pkg directory in runfiles.
@@ -38,6 +39,23 @@ for (const file of files) {
   const information = await stat(path.join(packageDirectory, relative));
   assert.ok(information.isFile() && information.size > 0, `Missing or empty package file: ${relative}`);
 }
+
+// Import the Bazel-produced server subpath in plain Node. A stray client-rune
+// re-export would execute `$state` here and fail instead of being hidden by a
+// Svelte/Vitest transform or by tests importing implementation files directly.
+const serverEntry = artifact.exports['./sveltekit/server'];
+assert.ok(serverEntry, 'Missing server-only SvelteKit export');
+const server = await import(pathToFileURL(path.join(packageDirectory, serverEntry.import)).href);
+assert.equal(typeof server.createCSRFHandle, 'function');
+assert.equal(typeof server.requireContentEditPermission, 'function');
+assert.equal(typeof server.requireAuth, 'function');
+assert.equal('csrfStore' in server, false, 'Server entry must not expose the client CSRF store');
+assert.equal('createCSRFStore' in server, false, 'Server entry must not expose client rune factories');
+assert.throws(
+  () => server.requireContentEditPermission({ id: 'reader', role: 'viewer' }, { authorId: 'another-owner' }),
+  { status: 403 },
+  'Server entry must retain SvelteKit HTTP 403 guard semantics',
+);
 
 // //:pkg is already the complete Bazel-produced directory. pack:false checks
 // those exact bytes without spawning npm/pnpm or trusting a second pack result.

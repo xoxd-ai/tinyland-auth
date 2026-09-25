@@ -109,6 +109,8 @@ js_test(
     args = ["$(rootpath :pkg)"],
     data = [
         ":pkg",
+        ":node_modules/@sveltejs/kit",
+        ":node_modules/bcryptjs",
         ":node_modules/publint",
         "package.json",
         "scripts/check-package-artifact.mjs",
