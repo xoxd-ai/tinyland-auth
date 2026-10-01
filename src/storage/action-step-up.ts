@@ -14,7 +14,7 @@ export interface ActionStepUpIdentity {
 export type ActionStepUpAction =
   | 'user.password.reset' | 'user.access.update' | 'user.remove'
   | 'factor.disable' | 'federation.activate'
-  | 'invitation.create' | 'invitation.extend';
+  | 'invitation.create' | 'invitation.extend' | 'spoke.owner.bind';
 
 export interface ActionStepUpBinding extends ActionStepUpIdentity {
   action: ActionStepUpAction;
@@ -80,7 +80,7 @@ interface Envelope { version: 1; record: StepUpRecord; seal: string }
 
 const ACTIONS: ReadonlySet<string> = new Set([
   'user.password.reset', 'user.access.update', 'user.remove', 'factor.disable',
-  'federation.activate', 'invitation.create', 'invitation.extend',
+  'federation.activate', 'invitation.create', 'invitation.extend', 'spoke.owner.bind',
 ]);
 const HEX64 = /^[a-f0-9]{64}$/;
 const REFERENCE = /^[A-Za-z0-9_-]{43}$/;
