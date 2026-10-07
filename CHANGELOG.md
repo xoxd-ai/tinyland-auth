@@ -30,8 +30,8 @@
      `localhost`, `127.0.0.1` or `*.local`. Under adapter-node without
      `ORIGIN` that host comes from the client's `Host` header, so 0.7.x
      admitted any request that sent `Host: localhost`, and every request when
-     `NODE_ENV` was unset. `MTLSOptions.isDevelopment` (`.` and
-     `./validation`) and the `dev-mode-no-cert` certificate are gone:
+     `NODE_ENV` was unset. `MTLSOptions.isDevelopment` (`.`,
+     `./validation` and `./sveltekit`) and the `dev-mode-no-cert` certificate are gone:
      `extractCertificate` and `getCertificateFingerprint` always read the
      forwarded certificate headers. `requireMTLS` takes an optional
      `MTLSOptions` (`validFingerprints`).
@@ -104,15 +104,6 @@
 
 ### Patch Changes
 
-- `build` removes `dist/` before compiling, and `prepublishOnly` also runs
-  `check:production-artifact`, so a manual publish from a tree with a stale
-  `dist/` cannot ship it.
-- Docs: the mTLS helpers trust the forwarded certificate headers. Without
-  `validFingerprints`, a forwarded subject with the verify header absent or
-  `NONE` is admitted, so the edge proxy must strip client-supplied copies.
-  This is unchanged from 0.7.x and is now stated on `MTLSOptions`,
-  `requireMTLS` and in the README.
-
 - Restore the Bazel module's shared `rules_ts` extension request to TypeScript
   5.9.3. Version 0.7.0 requested 6.0.3 from a non-root module, which conflicts
   with the rest of the first-party Bazel graph before a consumer can select its
@@ -147,15 +138,6 @@
   unaffected.
 
 ### Patch Changes
-
-- `build` removes `dist/` before compiling, and `prepublishOnly` also runs
-  `check:production-artifact`, so a manual publish from a tree with a stale
-  `dist/` cannot ship it.
-- Docs: the mTLS helpers trust the forwarded certificate headers. Without
-  `validFingerprints`, a forwarded subject with the verify header absent or
-  `NONE` is admitted, so the edge proxy must strip client-supplied copies.
-  This is unchanged from 0.7.x and is now stated on `MTLSOptions`,
-  `requireMTLS` and in the README.
 
 - Migrate the TOTP compatibility layer to otplib v13's stateless functional
   API while preserving the configured verification window and exact time-step
@@ -268,15 +250,6 @@
 
 ### Patch Changes
 
-- `build` removes `dist/` before compiling, and `prepublishOnly` also runs
-  `check:production-artifact`, so a manual publish from a tree with a stale
-  `dist/` cannot ship it.
-- Docs: the mTLS helpers trust the forwarded certificate headers. Without
-  `validFingerprints`, a forwarded subject with the verify header absent or
-  `NONE` is admitted, so the edge proxy must strip client-supplied copies.
-  This is unchanged from 0.7.x and is now stated on `MTLSOptions`,
-  `requireMTLS` and in the README.
-
 - Clarify the package release authority: the TypeScript import API remains
   `@tummycrypt/tinyland-auth`, npmjs publication is disabled, GitHub Packages
   uses the `@tinyland-inc/tinyland-auth` mirror coordinate, and Bazel targets
@@ -286,15 +259,6 @@
 
 ### Patch Changes
 
-- `build` removes `dist/` before compiling, and `prepublishOnly` also runs
-  `check:production-artifact`, so a manual publish from a tree with a stale
-  `dist/` cannot ship it.
-- Docs: the mTLS helpers trust the forwarded certificate headers. Without
-  `validFingerprints`, a forwarded subject with the verify header absent or
-  `NONE` is admitted, so the edge proxy must strip client-supplied copies.
-  This is unchanged from 0.7.x and is now stated on `MTLSOptions`,
-  `requireMTLS` and in the README.
-
 - Make TOTP and invitation exports compatible with both legacy `otplib` v12
   authenticator exports and modern `otplib` v13 functional exports used by
   SvelteKit SSR consumers.
@@ -303,30 +267,12 @@
 
 ### Patch Changes
 
-- `build` removes `dist/` before compiling, and `prepublishOnly` also runs
-  `check:production-artifact`, so a manual publish from a tree with a stale
-  `dist/` cannot ship it.
-- Docs: the mTLS helpers trust the forwarded certificate headers. Without
-  `validFingerprints`, a forwarded subject with the verify header absent or
-  `NONE` is admitted, so the edge proxy must strip client-supplied copies.
-  This is unchanged from 0.7.x and is now stated on `MTLSOptions`,
-  `requireMTLS` and in the README.
-
 - Disable package-level npm provenance so the self-hosted Bazel package publish
   lane can publish without npm rejecting the runner environment.
 
 ## 0.3.1
 
 ### Patch Changes
-
-- `build` removes `dist/` before compiling, and `prepublishOnly` also runs
-  `check:production-artifact`, so a manual publish from a tree with a stale
-  `dist/` cannot ship it.
-- Docs: the mTLS helpers trust the forwarded certificate headers. Without
-  `validFingerprints`, a forwarded subject with the verify header absent or
-  `NONE` is admitted, so the edge proxy must strip client-supplied copies.
-  This is unchanged from 0.7.x and is now stated on `MTLSOptions`,
-  `requireMTLS` and in the README.
 
 - Fix Node ESM consumption of the TOTP and invitation exports by importing the
   CommonJS `otplib` package through its default namespace.
@@ -335,28 +281,10 @@
 
 ### Patch Changes
 
-- `build` removes `dist/` before compiling, and `prepublishOnly` also runs
-  `check:production-artifact`, so a manual publish from a tree with a stale
-  `dist/` cannot ship it.
-- Docs: the mTLS helpers trust the forwarded certificate headers. Without
-  `validFingerprints`, a forwarded subject with the verify header absent or
-  `NONE` is admitted, so the edge proxy must strip client-supplied copies.
-  This is unchanged from 0.7.x and is now stated on `MTLSOptions`,
-  `requireMTLS` and in the README.
-
 - Roll forward published package versions so the next release re-establishes npm artifact truth for the current repo contents. This excludes `@tummycrypt/tinyland-schemas` because `0.2.1` is not published on npm yet.
 
 ## 0.2.1
 
 ### Patch Changes
-
-- `build` removes `dist/` before compiling, and `prepublishOnly` also runs
-  `check:production-artifact`, so a manual publish from a tree with a stale
-  `dist/` cannot ship it.
-- Docs: the mTLS helpers trust the forwarded certificate headers. Without
-  `validFingerprints`, a forwarded subject with the verify header absent or
-  `NONE` is admitted, so the edge proxy must strip client-supplied copies.
-  This is unchanged from 0.7.x and is now stated on `MTLSOptions`,
-  `requireMTLS` and in the README.
 
 - 429a49c: Strip .js.map sourcemaps from published packages and resolve workspace:\* dependencies to real version ranges.
