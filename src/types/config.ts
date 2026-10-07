@@ -9,8 +9,6 @@ export interface AuthConfig {
   appName: string;
   
   appUrl: string;
-  
-  isDevelopment: boolean;
 
   
   totp: TOTPConfig;
@@ -139,7 +137,6 @@ export interface SecurityConfig {
 export const DEFAULT_AUTH_CONFIG: AuthConfig = {
   appName: 'Tinyland.dev',
   appUrl: 'http://localhost:9080',
-  isDevelopment: process.env.NODE_ENV === 'development',
 
   totp: {
     enabled: true,

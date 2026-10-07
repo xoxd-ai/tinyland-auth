@@ -1,7 +1,7 @@
 # Migrating to @tummycrypt/tinyland-auth 1.0.0
 
-1.0.0 removes the fixed-code TOTP bypass and every test seam from the
-production entry points (ruling RS6). It also moves the test harness behind a
+1.0.0 removes the fixed-code TOTP bypass, the mTLS development auto-pass and
+every test seam from the production entry points (ruling RS6, RP2). It also moves the test harness behind a
 hard gate that keeps it out of the published package (ruling RS5). Carrier:
 TIN-5766. The consumer audit for this change is W3-audit (2026-10-07).
 
@@ -13,9 +13,18 @@ TIN-5766. The consumer audit for this change is W3-audit (2026-10-07).
 | passes `testCode` | Delete it. Tests must produce a real TOTP code from the stored secret (`TOTPService.generateToken`). |
 | sets `devMode` in a `TOTPConfig` object or a copy of `DEFAULT_AUTH_CONFIG.totp` | Delete the field. Spreading `DEFAULT_AUTH_CONFIG.totp` still compiles. |
 | imported `TotpVerifier`, `otplibTotpVerifier`, `Clock`, `systemClock` or `BackupCodeGenerator` | These were never in a published release. Remove the import. |
+| relies on `requireMTLS` / `extractCertificateFromEvent` passing on `localhost`, `*.local` or with `NODE_ENV` unset or `development` | Put a TLS-terminating proxy that forwards a verified client certificate in front of the app, also in development. There is no development pass. |
+| passes `isDevelopment` to `extractCertificate`, `getCertificateFingerprint` or an `*FromEvent` helper | Delete it. The option is gone and a stale value is ignored. |
+| sets `isDevelopment` in `createAuthConfig({...})` or an `AuthConfig` | Delete the field. No code read it. |
+| relies on `DEFAULT_COOKIE_CONFIG.secure` being `false` with `NODE_ENV` unset | Set `NODE_ENV=development` for local HTTP, or pass `secure: false` explicitly. |
 | imported `@tummycrypt/tinyland-auth/testing` | It is not published. Drive the real journeys, or run the package's own tests from this repo. |
 
-No runtime behaviour changes for a consumer that did not set `testCode`.
+No TOTP behaviour changes for a consumer that did not set `testCode`. mTLS
+checks now fail closed for any request without a forwarded client
+certificate, whatever the host or `NODE_ENV`. The 2026-10-07 audit found no
+caller of the mTLS helpers, `isDevelopment` or `DEFAULT_COOKIE_CONFIG` in
+tinyland.dev, elders.tinyland.dev, dollhouse-farm or
+euthanasiapettingparts.com.
 
 ## Known consumers (audit 2026-10-07)
 

@@ -39,10 +39,15 @@ export interface CertificateInfo {
 
 
 
+/**
+ * Options for client-certificate checks.
+ *
+ * There is no development or bypass option (1.0.0, RP2): a request is admitted
+ * only with a verified client certificate forwarded by the TLS-terminating
+ * proxy. Unknown keys, such as a stale pre-1.0 development flag, are ignored.
+ */
 export interface MTLSOptions {
-  
-  isDevelopment: boolean;
-  
+  /** When set, only certificates whose `sha256:` fingerprint is listed pass. */
   validFingerprints?: Set<string>;
 }
 
@@ -71,20 +76,8 @@ export interface MTLSOptions {
 
 export function extractCertificate(
   headers: CertificateHeaders,
-  options: MTLSOptions
+  options: MTLSOptions = {}
 ): CertificateInfo {
-  
-  if (options.isDevelopment) {
-    return {
-      isValid: true,
-      fingerprint: 'dev-mode-no-cert',
-      subject: 'Development Mode',
-      issuer: 'Local Development',
-      validFrom: new Date(),
-      validTo: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-    };
-  }
-
   
   if (
     headers.clientVerify &&
@@ -131,7 +124,7 @@ export function extractCertificate(
 
 export function getCertificateFingerprint(
   headers: CertificateHeaders,
-  options: MTLSOptions
+  options: MTLSOptions = {}
 ): string | null {
   const certInfo = extractCertificate(headers, options);
   return certInfo.isValid ? certInfo.fingerprint || null : null;

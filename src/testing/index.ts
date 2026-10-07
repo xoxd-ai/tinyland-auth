@@ -7,9 +7,10 @@
  *    build (`tsconfig.json`, Bazel `//:tinyland_auth`), so `dist/` and the
  *    published package never contain it. It builds only through
  *    `tsconfig.testing.json` into `dist-testing/`, which is not in `files`.
- * 2. Export condition. `package.json` maps `./testing` under the `test`
- *    condition only. Without that condition Node and Vite refuse to resolve
- *    it; with it, the published artifact has no file to load.
+ * 2. No export. `package.json` has no `./testing` entry under any condition,
+ *    so Node and Vite refuse `@tummycrypt/tinyland-auth/testing` with
+ *    ERR_PACKAGE_PATH_NOT_EXPORTED. Test suites import the source or the
+ *    `dist-testing/` build by path.
  * 3. Load gate. Evaluating this module throws unless `process.env.NODE_ENV`
  *    is exactly `"test"`. Unset, empty, `"production"`, `"development"` and
  *    every other value refuse. There is no caller-supplied environment
@@ -69,7 +70,10 @@ export class TestingEntryRefusedError extends Error {
   constructor(reason: string) {
     super(
       `@tummycrypt/tinyland-auth/testing refused to load: ${reason}. ` +
-        `It loads only when NODE_ENV is exactly "${TEST_NODE_ENV}".`,
+        `It loads only when NODE_ENV is exactly "${TEST_NODE_ENV}". ` +
+        // Keeps the sentinel in any bundle that evaluates this module, even a
+        // side-effect-only import where the exported constant is tree-shaken.
+        `[${TESTING_ENTRY_SENTINEL}]`,
     );
     this.name = 'TestingEntryRefusedError';
   }

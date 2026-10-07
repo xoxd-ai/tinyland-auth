@@ -189,6 +189,126 @@ describe('production build excludes the testing entry (RS5)', () => {
   }, 120_000);
 });
 
+/** Run an ES module script in a fresh Node process with exactly `env` for NODE_ENV. */
+function runNode(script: string, nodeEnv: string | undefined) {
+  const childEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key !== 'NODE_ENV' && value !== undefined) childEnv[key] = value;
+  }
+  if (nodeEnv !== undefined) childEnv.NODE_ENV = nodeEnv;
+  return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: work,
+    encoding: 'utf8',
+    env: childEnv,
+  });
+}
+
+describe('production entry has no development or seam bypass (RP2)', () => {
+  const distUrl = (file: string) => JSON.stringify(new URL(`file://${join(cleanPkg, 'dist', file)}`).href);
+
+  // Every host and NODE_ENV combination the 0.7.x auto-detection admitted
+  // without a client certificate, plus a stale caller flag.
+  const mtlsProbe = () => `
+    const adapter = await import(${distUrl('adapters/sveltekit/mtls.js')});
+    const core = await import(${distUrl('core/security/mtls.js')});
+    const event = (host, headers = {}) => ({
+      url: new URL('https://' + host + '/admin'),
+      request: new Request('https://' + host + '/admin', { headers }),
+      locals: {},
+    });
+    const out = {};
+    for (const host of ['auth.example.com', 'localhost', '127.0.0.1', 'evil.local']) {
+      out[host] = adapter.requireMTLS(event(host));
+    }
+    out.staleFlagCore = core.extractCertificate({}, { isDevelopment: true }).isValid;
+    out.staleFlagAdapter = adapter.extractCertificateFromEvent(event('localhost'), { isDevelopment: true }).isValid;
+    const withCert = event('auth.example.com', {
+      'X-SSL-Client-Cert': '-----BEGIN CERTIFICATE-----MIIBfake-----END CERTIFICATE-----',
+      'X-SSL-Client-Verify': 'SUCCESS',
+    });
+    out.withCert = adapter.requireMTLS(withCert);
+    out.fingerprint = withCert.locals.mTLSCert.fingerprint.startsWith('sha256:');
+    out.failedVerify = adapter.requireMTLS(event('localhost', {
+      'X-SSL-Client-Cert': 'x', 'X-SSL-Client-Verify': 'FAILED:unknown ca',
+    }));
+    process.stdout.write(JSON.stringify(out));
+  `;
+
+  for (const [label, nodeEnv] of [
+    ['production', 'production'],
+    ['unset', undefined],
+    ['development', 'development'],
+  ] as Array<[string, string | undefined]>) {
+    it(`requireMTLS admits no request without a client certificate (NODE_ENV ${label})`, () => {
+      const result = runNode(mtlsProbe(), nodeEnv);
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        'auth.example.com': false,
+        localhost: false,
+        '127.0.0.1': false,
+        'evil.local': false,
+        staleFlagCore: false,
+        staleFlagAdapter: false,
+        withCert: true,
+        fingerprint: true,
+        failedVerify: false,
+      });
+    });
+  }
+
+  it('the shipped seam writer refuses outside NODE_ENV=test, even through a file-URL import', () => {
+    const script = `
+      const seams = await import(${distUrl('core/seams/index.js')});
+      try { seams.installSeams({}, { clock: { now: () => 0 } }); process.stdout.write('installed'); }
+      catch (error) { process.stdout.write('refused: ' + error.message); }
+    `;
+    for (const nodeEnv of ['production', undefined, '', 'development', 'TEST']) {
+      const result = runNode(script, nodeEnv);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/^refused: Test seams can only be installed when NODE_ENV is exactly "test"/);
+    }
+    expect(runNode(script, 'test').stdout).toBe('installed');
+  });
+
+  it('generateSecurePassword works in plain Node ESM (no CommonJS require)', () => {
+    const script = `
+      const { generateSecurePassword } = await import(${distUrl('index.js')});
+      process.stdout.write(generateSecurePassword(24));
+    `;
+    const result = runNode(script, 'production');
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toHaveLength(24);
+  });
+
+  it('session cookies stay Secure unless NODE_ENV is explicitly development or test', () => {
+    const script = `
+      const { DEFAULT_COOKIE_CONFIG } = await import(${distUrl('adapters/sveltekit/session-cookies.js')});
+      process.stdout.write(String(DEFAULT_COOKIE_CONFIG.secure));
+    `;
+    expect(runNode(script, 'production').stdout).toBe('true');
+    expect(runNode(script, undefined).stdout).toBe('true');
+    expect(runNode(script, '').stdout).toBe('true');
+    expect(runNode(script, 'development').stdout).toBe('false');
+    expect(runNode(script, 'test').stdout).toBe('false');
+  });
+
+  it('the artifact check turns red when the mTLS development auto-pass comes back', () => {
+    const dir = contaminatedCopy('pkg-mtls-dev-regression');
+    appendFileSync(
+      join(dir, 'dist/core/security/mtls.js'),
+      "\nexport function detectDevelopment() { return { isDevelopment: true, fingerprint: 'dev-mode-no-cert' }; }\n",
+    );
+
+    const result = checkArtifact(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('contains "isDevelopment"');
+    expect(result.stderr).toContain('contains "detectDevelopment"');
+    expect(result.stderr).toContain('contains "dev-mode-no-cert"');
+  }, 120_000);
+});
+
 describe('testing entry load gate (RS5)', () => {
   const refusals: Array<[string, string | undefined]> = [
     ['unset', undefined],
@@ -205,6 +325,7 @@ describe('testing entry load gate (RS5)', () => {
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain('TestingEntryRefusedError');
       expect(result.stderr).toContain('refused to load');
+      expect(result.stderr).toContain(SENTINEL);
       expect(result.stderr).toContain(nodeEnv === undefined ? 'NODE_ENV is unset' : `NODE_ENV is ${JSON.stringify(nodeEnv)}`);
     });
   }

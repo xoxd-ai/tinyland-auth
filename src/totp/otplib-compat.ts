@@ -113,7 +113,7 @@ export function generateAuthenticatorUri(
 
 /**
  * Optional epoch (seconds) override. Omitted in production so otplib reads the
- * system clock itself; supplied only when a caller injects a `Clock`.
+ * system clock itself; supplied only when the test harness installed a clock seam.
  */
 function epochOption(epochSeconds?: number): { epoch?: number } {
   return epochSeconds === undefined ? {} : { epoch: epochSeconds };

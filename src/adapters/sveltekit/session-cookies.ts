@@ -27,7 +27,9 @@ export interface CookieConfig {
 export const DEFAULT_COOKIE_CONFIG: CookieConfig = {
   sessionCookieName: 'sessionId',
   authDataCookieName: 'authData',
-  secure: process.env.NODE_ENV === 'production',
+  // Fail closed: only an explicit development or test NODE_ENV drops Secure.
+  // An unset NODE_ENV (adapter-node default) still sets it.
+  secure: process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test',
   path: '/',
   sameSite: 'lax',
   maxAge: 60 * 60 * 24 * 7, 

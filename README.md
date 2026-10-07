@@ -149,6 +149,9 @@ test bypass and no test seam:
   verifier. Every code is checked by otplib against the stored secret.
 - `TOTPService`, `SessionManager` and `BootstrapService` take no clock or
   recovery-code generator option. They use the system clock and the CSPRNG.
+- The mTLS helpers have no development pass: `requireMTLS` admits a request
+  only with a forwarded, verified client certificate, whatever the host or
+  `NODE_ENV`.
 
 The test harness lives in `src/testing` and stays in this repository. It is
 behind a hard gate:

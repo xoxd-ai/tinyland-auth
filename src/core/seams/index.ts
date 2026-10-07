@@ -50,11 +50,23 @@ export function epochSecondsFor(service: object): number | undefined {
 }
 
 /**
- * Attach seams to one service instance. Called only from `src/testing`.
+ * Attach seams to one service instance. Called only from `src/testing`, and
+ * refused unless `process.env.NODE_ENV` is exactly `"test"`.
  * Installing twice on the same instance is refused so a harness cannot
  * silently swap a clock mid-run.
  */
 export function installSeams(service: object, seams: ServiceSeams): void {
+  // Defence in depth: the module ships in dist (unexported), so a file-URL
+  // import could still reach this writer. It refuses outside NODE_ENV=test,
+  // read live from process.env and never from a caller.
+  const nodeEnv = typeof process === 'object' && process?.env ? process.env.NODE_ENV : undefined;
+  if (nodeEnv !== 'test') {
+    throw new Error(
+      `Test seams can only be installed when NODE_ENV is exactly "test" (it is ${
+        nodeEnv === undefined ? 'unset' : JSON.stringify(nodeEnv)
+      })`,
+    );
+  }
   if (registry.has(service)) {
     throw new Error('Test seams are already installed on this service');
   }

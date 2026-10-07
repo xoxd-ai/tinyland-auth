@@ -64,7 +64,17 @@ const TESTING_SYMBOLS = [
 ];
 
 // Names removed from the production entry by RS6. None may come back.
-const REMOVED_RS6_NAMES = ['devMode', 'testCode', 'TotpVerifier', 'otplibTotpVerifier'];
+const REMOVED_RS6_NAMES = [
+  'devMode',
+  'testCode',
+  'TotpVerifier',
+  'otplibTotpVerifier',
+  // mTLS development auto-pass removed in 1.0.0 (RP2): no caller or host may
+  // switch certificate checks off.
+  'isDevelopment',
+  'detectDevelopment',
+  'dev-mode-no-cert',
+];
 
 // Internal seam writer: shipped in dist/core/seams (unreachable through the
 // exports map) but never referenced by production code, so it must be

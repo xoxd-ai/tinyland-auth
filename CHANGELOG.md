@@ -23,8 +23,23 @@
      `generateBackupCodes` options on `TOTPServiceConfig`,
      `SessionManagerConfig` and `BootstrapServiceConfig`.
 
-  A legacy `devMode` / `testCode` key passed at runtime is ignored. It never
-  accepts a fixed code.
+  7. The mTLS development auto-pass (RP2). `requireMTLS`,
+     `extractCertificateFromEvent` and `getCertificateFingerprintFromEvent`
+     (`./sveltekit`) no longer admit a request without a client certificate
+     when `NODE_ENV` is unset or `development`, or when the request host is
+     `localhost`, `127.0.0.1` or `*.local`. Under adapter-node without
+     `ORIGIN` that host comes from the client's `Host` header, so 0.7.x
+     admitted any request that sent `Host: localhost`, and every request when
+     `NODE_ENV` was unset. `MTLSOptions.isDevelopment` (`.` and
+     `./validation`) and the `dev-mode-no-cert` certificate are gone:
+     `extractCertificate` and `getCertificateFingerprint` always read the
+     forwarded certificate headers. `requireMTLS` takes an optional
+     `MTLSOptions` (`validFingerprints`).
+  8. `AuthConfig.isDevelopment` and `DEFAULT_AUTH_CONFIG.isDevelopment`. No
+     code read it.
+
+  A legacy `devMode` / `testCode` / `isDevelopment` key passed at runtime is
+  ignored. It never accepts a fixed code or skips a certificate check.
 
 - **Test harness behind a hard gate (RS5).** `src/testing` holds
   `createTestAdmissionIssuer`, `generateTestIdentity`, `createManualClock`,
@@ -40,7 +55,8 @@
 
 - **Production-exclusion proof.** `scripts/check-production-artifact.mjs`
   checks a built package and a production Vite bundle of every public entry
-  for testing symbols, the unique testing sentinel, removed bypass names and
+  for testing symbols, the unique testing sentinel, removed bypass names
+  (including `isDevelopment`, `detectDevelopment` and `dev-mode-no-cert`) and
   the internal seam writer, and confirms that `./testing` does not resolve. It
   runs on the `pnpm pack` tarball (`pnpm check:production-artifact`, in CI) and
   on Bazel `//:pkg` (`//:production_artifact_test`).
@@ -48,6 +64,16 @@
 
 ### Patch Changes
 
+- `fix(sveltekit)`: `DEFAULT_COOKIE_CONFIG.secure` is now `true` unless
+  `NODE_ENV` is exactly `development` or `test`. 0.7.x set it only when
+  `NODE_ENV` was `production`, so session cookies lost `Secure` when
+  `NODE_ENV` was unset.
+- `fix(security)`: `generateSecurePassword` imports `randomInt` from `crypto`
+  instead of calling CommonJS `require` inside ESM, which threw
+  `ReferenceError` in plain Node. It also no longer has modulo bias.
+- The internal seam writer (`dist/core/seams`, not exported) refuses unless
+  `NODE_ENV` is exactly `test`, so a file-URL import cannot install a clock
+  in production.
 - `fix(totp)`: `base32ByteLength` counts padding with a linear scan instead of
   a backtracking regex (CodeQL `js/polynomial-redos`). The 128-bit floor is
   unchanged for well-formed secrets.
