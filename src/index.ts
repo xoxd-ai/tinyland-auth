@@ -235,12 +235,8 @@ export {
 export {
   TOTPService,
   createTOTPService,
-  otplibTotpVerifier,
   type TOTPServiceConfig,
-  type TotpVerifier,
 } from './core/totp/index.js';
-
-export { systemClock, type Clock } from './core/clock/index.js';
 
 
 
@@ -257,7 +253,6 @@ export {
   formatCodesForDisplay,
   shouldRegenerateCodes,
   DEFAULT_BACKUP_CODES_CONFIG,
-  type BackupCodeGenerator,
 } from './core/backup-codes/index.js';
 
 

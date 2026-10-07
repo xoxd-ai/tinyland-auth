@@ -1,23 +1,56 @@
 # @tummycrypt/tinyland-auth
 
-## Unreleased
+## 1.0.0
 
-### Minor Changes
+### Major Changes
 
-- **Harness seams for agent-driven auth tests (RP2).** All additive; with no
-  seam supplied every service behaves exactly as in 0.7.1.
-  - `Clock` / `systemClock`: optional `clock` on `TOTPServiceConfig`,
-    `BootstrapServiceConfig` and `SessionManagerConfig`.
-  - `TotpVerifier` / `otplibTotpVerifier`: optional `verifier` on
-    `TOTPServiceConfig`. otplib remains the default.
-  - `BackupCodeGenerator`: optional `generateBackupCodes` on
-    `BootstrapServiceConfig`. The CSPRNG generator remains the default.
-  - New explicit subpath `@tummycrypt/tinyland-auth/testing`: `TestAdmissionIssuer`
-    and `createTestAdmissionIssuer`, `generateTestIdentity`, `createManualClock`
-    and `createDeterministicBackupCodeGenerator`. Admission fails closed: it
-    always refuses under `NODE_ENV=production` and otherwise requires
-    `TINYLAND_AUTH_TEST_ADMISSION=enabled`. `tests/testing-isolation.test.ts`
-    proves no other entry point reaches the module.
+- **BREAKING (RS6, TIN-5766): the production entry has no TOTP bypass and no
+  test seam.** Migration: [docs/migration-1.0.md](docs/migration-1.0.md).
+
+  Removed (breaking):
+
+  1. `TOTPServiceConfig.devMode` (exported from `.` and `./totp`).
+  2. `TOTPServiceConfig.testCode` (exported from `.` and `./totp`).
+  3. The fixed-code shortcut in `TOTPService.verifyToken` and
+     `verifyTokenWithStep`, and the private `devMode` / `testCode` fields.
+  4. `createTOTPService` no longer passes `devMode`.
+  5. `TOTPConfig.devMode` (`.` and `./types`) and
+     `DEFAULT_AUTH_CONFIG.totp.devMode`. Without the bypass the setting did
+     nothing.
+  6. The unreleased seams from the 1.0 development line (never published):
+     `TOTPServiceConfig.verifier`, `TotpVerifier`, `otplibTotpVerifier`,
+     `Clock`, `systemClock`, `BackupCodeGenerator`, and the `clock` /
+     `generateBackupCodes` options on `TOTPServiceConfig`,
+     `SessionManagerConfig` and `BootstrapServiceConfig`.
+
+  A legacy `devMode` / `testCode` key passed at runtime is ignored. It never
+  accepts a fixed code.
+
+- **Test harness behind a hard gate (RS5).** `src/testing` holds
+  `createTestAdmissionIssuer`, `generateTestIdentity`, `createManualClock`,
+  `createDeterministicBackupCodeGenerator` and the
+  `createTestTOTPService` / `createTestSessionManager` /
+  `createTestBootstrapService` seam factories. It is excluded from the
+  production build, `//:pkg` and the npm tarball. It is not exported. It
+  throws on load unless `process.env.NODE_ENV === 'test'`, so it fails closed
+  when `NODE_ENV` is unset. It never reads a caller-supplied environment:
+  `TestAdmissionIssuerConfig.env` and the `env` parameters of the gate
+  functions are gone. Admission also requires
+  `TINYLAND_AUTH_TEST_ADMISSION=enabled`.
+
+- **Production-exclusion proof.** `scripts/check-production-artifact.mjs`
+  checks a built package and a production Vite bundle of every public entry
+  for testing symbols, the unique testing sentinel, removed bypass names and
+  the internal seam writer, and confirms that `./testing` does not resolve. It
+  runs on the `pnpm pack` tarball (`pnpm check:production-artifact`, in CI) and
+  on Bazel `//:pkg` (`//:production_artifact_test`).
+  `tests/production-artifact.test.ts` proves the check catches injected leaks.
+
+### Patch Changes
+
+- `fix(totp)`: `base32ByteLength` counts padding with a linear scan instead of
+  a backtracking regex (CodeQL `js/polynomial-redos`). The 128-bit floor is
+  unchanged for well-formed secrets.
 
 ## 0.7.1
 

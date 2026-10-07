@@ -10,9 +10,7 @@
 export {
   TOTPService,
   createTOTPService,
-  otplibTotpVerifier,
   type TOTPServiceConfig,
-  type TotpVerifier,
 } from '../core/totp/index.js';
 
 

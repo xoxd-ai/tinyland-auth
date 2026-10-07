@@ -1,6 +1,6 @@
 {
   "name": "@tummycrypt/tinyland-auth",
-  "version": "0.7.1",
+  "version": "1.0.0",
   "packageManager": "pnpm@10.13.1",
   "description": "Production-grade authentication system with TOTP, RBAC, and pluggable storage",
   "type": "module",
@@ -43,10 +43,6 @@
     "./validation": {
       "types": "./dist/validation/index.d.ts",
       "import": "./dist/validation/index.js"
-    },
-    "./testing": {
-      "types": "./dist/testing/index.d.ts",
-      "import": "./dist/testing/index.js"
     }
   },
   "files": [
@@ -55,16 +51,18 @@
   ],
   "scripts": {
     "build": "tsc",
+    "build:testing": "tsc -p tsconfig.testing.json",
     "check:invitation-authority": "node scripts/check-invitation-authority.mjs",
     "check:release-metadata": "node scripts/check-release-metadata.mjs",
+    "check:production-artifact": "node scripts/pack-and-check-production-artifact.mjs",
     "dev": "tsc --watch",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist dist-testing",
     "check:package": "publint",
     "prepublishOnly": "pnpm build && pnpm check:invitation-authority && pnpm check:package",
     "test": "vitest run",
     "test:bazel": "bash scripts/ci-bazel-test.sh",
     "test:coverage": "vitest --coverage",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit -p tsconfig.testing.json"
   },
   "keywords": [
     "authentication",
@@ -98,6 +96,7 @@
     "svelte": "^5.0.0",
     "publint": "^0.3.18",
     "typescript": "^6.0.3",
+    "vite": "^8.0.10",
     "vitest": "^4.0.0"
   },
   "peerDependencies": {

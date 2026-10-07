@@ -17,12 +17,8 @@ import type {
   BootstrapStatus,
 } from '../../types/api.js';
 import { hashPassword } from '../../core/security/password.js';
-import {
-  generateBackupCodes,
-  createBackupCodeSet,
-  type BackupCodeGenerator,
-} from '../../core/backup-codes/index.js';
-import type { Clock } from '../../core/clock/index.js';
+import { generateBackupCodes, createBackupCodeSet } from '../../core/backup-codes/index.js';
+import { nowMsFor, seamsOf } from '../../core/seams/index.js';
 
 
 
@@ -44,12 +40,6 @@ export interface BootstrapServiceConfig {
   verifyTOTP: (secret: string, token: string) => boolean;
   
   encryptTOTPSecret: (handle: string, secret: string) => Promise<EncryptedTOTPSecret>;
-
-  /** Time source for the bootstrap-state TTL. Defaults to the system clock. */
-  clock?: Clock;
-
-  /** Recovery-code generator. Defaults to the CSPRNG-backed generateBackupCodes. */
-  generateBackupCodes?: BackupCodeGenerator;
 }
 
 
@@ -118,8 +108,13 @@ export class BootstrapService {
   
 
 
+  /**
+   * System time. First-admin bootstrap stays attended (RP2): the clock and the
+   * recovery-code generator have no public override; a test build attaches
+   * them only through the gated ./testing entry.
+   */
   private nowMs(): number {
-    return this.config.clock ? this.config.clock.now() : Date.now();
+    return nowMsFor(this);
   }
 
   async getStatus(): Promise<BootstrapStatus> {
@@ -172,7 +167,7 @@ export class BootstrapService {
     );
 
     
-    const backupCodes = (this.config.generateBackupCodes ?? generateBackupCodes)(
+    const backupCodes = (seamsOf(this)?.generateBackupCodes ?? generateBackupCodes)(
       this.config.backupCodesCount
     );
 

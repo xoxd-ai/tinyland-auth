@@ -1,26 +1,43 @@
 /**
- * Test-only harness seams for `@tummycrypt/tinyland-auth`.
+ * Test-only harness for `@tummycrypt/tinyland-auth` (RS5, RP2).
  *
- * Reachable ONLY through the explicit `@tummycrypt/tinyland-auth/testing`
- * subpath. Nothing here is re-exported from the package index or from any
- * other subpath (`tests/testing-isolation.test.ts` walks the import graph to
- * prove it), so an application bundle contains this module only if the
- * application imports it by name.
+ * Hard gate, in layers:
  *
- * Everything that can admit an identity is additionally gated at runtime and
- * fails closed: `NODE_ENV=production` always refuses, and any other
- * environment must opt in with `TINYLAND_AUTH_TEST_ADMISSION=enabled`.
+ * 1. Compile-time exclusion. This directory is excluded from the production
+ *    build (`tsconfig.json`, Bazel `//:tinyland_auth`), so `dist/` and the
+ *    published package never contain it. It builds only through
+ *    `tsconfig.testing.json` into `dist-testing/`, which is not in `files`.
+ * 2. Export condition. `package.json` maps `./testing` under the `test`
+ *    condition only. Without that condition Node and Vite refuse to resolve
+ *    it; with it, the published artifact has no file to load.
+ * 3. Load gate. Evaluating this module throws unless `process.env.NODE_ENV`
+ *    is exactly `"test"`. Unset, empty, `"production"`, `"development"` and
+ *    every other value refuse. There is no caller-supplied environment
+ *    anywhere in this module: every check reads the live `process.env`.
+ * 4. Admission gate. Minting a user additionally requires
+ *    `TINYLAND_AUTH_TEST_ADMISSION=enabled`, read from `process.env` at
+ *    construction and on every `admit()`.
+ *
+ * `scripts/check-production-artifact.mjs` proves layers 1-2 on the real
+ * artifact (Bazel `//:pkg` and the npm tarball) with a production Vite
+ * bundle; `tests/production-artifact.test.ts` proves layer 3.
+ *
  * Production first-admin bootstrap stays the attended `BootstrapService` flow.
- *
- * Consumers must still keep the import out of production builds (a build-time
- * flag around a dynamic import, plus a bundle assertion); this gate is the
- * second line, not the first.
  */
 import { createHash, randomBytes } from 'crypto';
-import type { Clock } from '../core/clock/index.js';
-import type { BackupCodeGenerator } from '../core/backup-codes/index.js';
+import {
+  installSeams,
+  type BackupCodeGenerator,
+  type Clock,
+} from '../core/seams/index.js';
 import { createBackupCodeSet, generateBackupCodes } from '../core/backup-codes/index.js';
 import { generateSecurePassword, hashPassword } from '../core/security/password.js';
+import { TOTPService, type TOTPServiceConfig } from '../core/totp/index.js';
+import { SessionManager, type SessionManagerConfig } from '../core/session/index.js';
+import {
+  BootstrapService,
+  type BootstrapServiceConfig,
+} from '../modules/bootstrap/index.js';
 import { generateAuthenticatorSecret } from '../totp/otplib-compat.js';
 import type { IStorageAdapter } from '../storage/interface.js';
 import type {
@@ -31,15 +48,32 @@ import type {
 } from '../types/auth.js';
 import { ADMIN_ROLES } from '../types/auth.js';
 
-type AdminRole = AdminUser['role'];
+export type { BackupCodeGenerator, Clock };
 
-/** Environment variable a non-production environment must set to opt in. */
+/**
+ * Unique marker compiled into this module and nowhere else. The production
+ * artifact check fails if it appears in a production bundle or package.
+ */
+export const TESTING_ENTRY_SENTINEL = 'tinyland-auth-testing-entry-5a9aa858497cf8b557fcbb77';
+
+/** The only `NODE_ENV` value under which this module loads. */
+export const TEST_NODE_ENV = 'test';
+
+/** Environment variable that must also be set to mint users. */
 export const TEST_ADMISSION_ENV = 'TINYLAND_AUTH_TEST_ADMISSION';
 
 /** The only value of {@link TEST_ADMISSION_ENV} that opts in. */
 export const TEST_ADMISSION_ENV_ENABLED = 'enabled';
 
-export type TestAdmissionEnv = Record<string, string | undefined>;
+export class TestingEntryRefusedError extends Error {
+  constructor(reason: string) {
+    super(
+      `@tummycrypt/tinyland-auth/testing refused to load: ${reason}. ` +
+        `It loads only when NODE_ENV is exactly "${TEST_NODE_ENV}".`,
+    );
+    this.name = 'TestingEntryRefusedError';
+  }
+}
 
 export class TestAdmissionDisabledError extends Error {
   constructor(reason: string) {
@@ -48,22 +82,45 @@ export class TestAdmissionDisabledError extends Error {
   }
 }
 
-export function isTestAdmissionAllowed(env: TestAdmissionEnv = process.env): boolean {
+/** Reads the live process environment. Deliberately takes no argument. */
+function liveEnv(name: string): string | undefined {
+  if (typeof process !== 'object' || process === null) return undefined;
+  const env = process.env;
+  if (typeof env !== 'object' || env === null) return undefined;
+  const value = env[name];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function describeNodeEnv(value: string | undefined): string {
+  return value === undefined ? 'NODE_ENV is unset' : `NODE_ENV is ${JSON.stringify(value)}`;
+}
+
+/** Throws unless `process.env.NODE_ENV` is exactly `"test"`. */
+export function assertTestEnvironment(): void {
+  const nodeEnv = liveEnv('NODE_ENV');
+  if (nodeEnv !== TEST_NODE_ENV) {
+    throw new TestingEntryRefusedError(describeNodeEnv(nodeEnv));
+  }
+}
+
+// Load gate: runs when this module is evaluated, before any export is usable.
+assertTestEnvironment();
+
+/** True only under `NODE_ENV=test` with `TINYLAND_AUTH_TEST_ADMISSION=enabled`. */
+export function isTestAdmissionAllowed(): boolean {
   return (
-    env.NODE_ENV !== 'production' &&
-    env[TEST_ADMISSION_ENV] === TEST_ADMISSION_ENV_ENABLED
+    liveEnv('NODE_ENV') === TEST_NODE_ENV &&
+    liveEnv(TEST_ADMISSION_ENV) === TEST_ADMISSION_ENV_ENABLED
   );
 }
 
-/**
- * Throws unless test admission is explicitly enabled in a non-production
- * environment. Production wins over the opt-in flag.
- */
-export function assertTestAdmissionAllowed(env: TestAdmissionEnv = process.env): void {
-  if (env.NODE_ENV === 'production') {
-    throw new TestAdmissionDisabledError('NODE_ENV is production');
+/** Throws unless {@link isTestAdmissionAllowed}. Reads `process.env` only. */
+export function assertTestAdmissionAllowed(): void {
+  const nodeEnv = liveEnv('NODE_ENV');
+  if (nodeEnv !== TEST_NODE_ENV) {
+    throw new TestAdmissionDisabledError(describeNodeEnv(nodeEnv));
   }
-  if (env[TEST_ADMISSION_ENV] !== TEST_ADMISSION_ENV_ENABLED) {
+  if (liveEnv(TEST_ADMISSION_ENV) !== TEST_ADMISSION_ENV_ENABLED) {
     throw new TestAdmissionDisabledError(
       `${TEST_ADMISSION_ENV} is not "${TEST_ADMISSION_ENV_ENABLED}"`,
     );
@@ -91,8 +148,8 @@ export function createManualClock(startMs: number): ManualClock {
 
 /**
  * Recovery-code generator whose output is a pure function of `seed`. Pass a
- * per-run seed; the codes match the production `XXXX-XXXX` format. Never use
- * outside tests: the codes are predictable by construction.
+ * per-run seed; the codes match the production `XXXX-XXXX` format. The codes
+ * are predictable by construction, which is why this lives here only.
  */
 export function createDeterministicBackupCodeGenerator(seed: string): BackupCodeGenerator {
   if (!seed) {
@@ -110,6 +167,52 @@ export function createDeterministicBackupCodeGenerator(seed: string): BackupCode
     });
   };
 }
+
+/**
+ * A `TOTPService` whose generation, verification and replay step follow
+ * `seams.clock`. Production code cannot construct one: the clock has no
+ * public option on `TOTPServiceConfig`.
+ */
+export function createTestTOTPService(
+  config: TOTPServiceConfig,
+  seams: { clock: Clock },
+): TOTPService {
+  assertTestEnvironment();
+  const service = new TOTPService(config);
+  installSeams(service, { clock: seams.clock });
+  return service;
+}
+
+/** A `SessionManager` whose own expiry and renewal checks follow `seams.clock`. */
+export function createTestSessionManager(
+  config: SessionManagerConfig,
+  seams: { clock: Clock },
+): SessionManager {
+  assertTestEnvironment();
+  const manager = new SessionManager(config);
+  installSeams(manager, { clock: seams.clock });
+  return manager;
+}
+
+/**
+ * A `BootstrapService` with a test clock for the state TTL and/or a
+ * deterministic recovery-code generator. For package and harness tests only;
+ * production first-admin bootstrap stays attended.
+ */
+export function createTestBootstrapService(
+  config: BootstrapServiceConfig,
+  seams: { clock?: Clock; generateBackupCodes?: BackupCodeGenerator },
+): BootstrapService {
+  assertTestEnvironment();
+  const service = new BootstrapService(config);
+  installSeams(service, {
+    clock: seams.clock,
+    generateBackupCodes: seams.generateBackupCodes,
+  });
+  return service;
+}
+
+type AdminRole = AdminUser['role'];
 
 /** Generated, per-run credentials for one test identity. */
 export interface TestIdentity {
@@ -130,6 +233,7 @@ export function generateTestIdentity(
   role: AdminRole,
   options: { runId?: string; emailDomain?: string } = {},
 ): TestIdentity {
+  assertTestEnvironment();
   if (!ADMIN_ROLES.includes(role)) {
     throw new Error(`Unknown role: ${String(role)}`);
   }
@@ -181,6 +285,10 @@ export type TestAdmissionStorage = Pick<
   | 'logAuditEvent'
 >;
 
+/**
+ * There is intentionally no `env` option: the gate reads `process.env` only
+ * (RS5), so configuration can never open it.
+ */
 export interface TestAdmissionIssuerConfig {
   storage: TestAdmissionStorage;
   /** Same contract as `BootstrapServiceConfig.encryptTOTPSecret`. */
@@ -189,19 +297,16 @@ export interface TestAdmissionIssuerConfig {
   backupCodesCount?: number;
   generateBackupCodes?: BackupCodeGenerator;
   clock?: Clock;
-  /** Environment to gate on. Defaults to `process.env`, read on every call. */
-  env?: TestAdmissionEnv;
 }
 
 export function createTestAdmissionIssuer(config: TestAdmissionIssuerConfig): TestAdmissionIssuer {
-  const readEnv = () => config.env ?? process.env;
-  assertTestAdmissionAllowed(readEnv());
+  assertTestAdmissionAllowed();
 
   const nowIso = () => new Date(config.clock ? config.clock.now() : Date.now()).toISOString();
 
   return {
     async admit(request) {
-      assertTestAdmissionAllowed(readEnv());
+      assertTestAdmissionAllowed();
 
       const identity = request.identity ?? generateTestIdentity(request.role);
       if (identity.role !== request.role) {

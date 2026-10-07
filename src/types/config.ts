@@ -36,8 +36,6 @@ export interface TOTPConfig {
   
   encryptionKey: string;
   
-  devMode: boolean;
-  
   digits: number;
   
   period: number;
@@ -147,7 +145,6 @@ export const DEFAULT_AUTH_CONFIG: AuthConfig = {
     enabled: true,
     issuer: 'Tinyland.dev',
     encryptionKey: '',
-    devMode: false,
     digits: 6,
     period: 30,
     algorithm: 'SHA1',

@@ -1,33 +1,31 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as pkg from '../src/index.js';
 import {
   BootstrapService,
   MemoryStorageAdapter,
   SessionManager,
   TOTPService,
-  otplibTotpVerifier,
-  systemClock,
   type BootstrapServiceConfig,
-  type Clock,
   type EncryptedTOTPSecret,
   type SessionConfig,
-  type TotpVerifier,
 } from '../src/index.js';
 import { DEFAULT_BACKUP_CODES_CONFIG } from '../src/core/backup-codes/index.js';
-import {
-  generateAuthenticatorSecret,
-  generateAuthenticatorToken,
-  getAuthenticatorCheckDelta,
-  verifyAuthenticatorToken,
-} from '../src/totp/otplib-compat.js';
+import { generateAuthenticatorSecret, generateAuthenticatorToken } from '../src/totp/otplib-compat.js';
 import {
   TEST_ADMISSION_ENV,
   TestAdmissionDisabledError,
+  TestingEntryRefusedError,
   assertTestAdmissionAllowed,
+  assertTestEnvironment,
   createDeterministicBackupCodeGenerator,
   createManualClock,
   createTestAdmissionIssuer,
+  createTestBootstrapService,
+  createTestSessionManager,
+  createTestTOTPService,
   generateTestIdentity,
   isTestAdmissionAllowed,
+  type Clock,
 } from '../src/testing/index.js';
 
 const ENCRYPTION_KEY = 'abcdefghijklmnopqrstuvwxyz123456';
@@ -79,11 +77,11 @@ const sessionConfig: SessionConfig = {
 };
 
 describe('production defaults are unchanged', () => {
-  it('systemClock tracks Date.now()', () => {
-    const before = Date.now();
-    const value = systemClock.now();
-    expect(value).toBeGreaterThanOrEqual(before);
-    expect(value).toBeLessThanOrEqual(Date.now());
+  it('exposes no clock, verifier or code-generator seam on the production entry (RS6)', () => {
+    const surface = Object.keys(pkg);
+    for (const removed of ['systemClock', 'otplibTotpVerifier', 'installSeams', 'seamsOf']) {
+      expect(surface).not.toContain(removed);
+    }
   });
 
   it('TOTPService without seams verifies real system-time codes and rejects wrong ones', async () => {
@@ -104,15 +102,42 @@ describe('production defaults are unchanged', () => {
     expect(await service.verifyTokenWithStep(secret, token, result.step)).toEqual({ valid: false });
   });
 
-  it('the default verifier is otplib and agrees with the compat primitives', async () => {
-    const secret = generateAuthenticatorSecret();
-    const token = generateAuthenticatorToken(secret);
-    expect(await otplibTotpVerifier.verify(secret, token)).toBe(
-      await verifyAuthenticatorToken(secret, token),
-    );
-    expect(otplibTotpVerifier.checkDelta(secret, token)).toBe(
-      getAuthenticatorCheckDelta(secret, token),
-    );
+  it('ignores clock, verifier and generator keys passed through production configs', async () => {
+    const frozen = createManualClock(Date.UTC(2001, 0, 1));
+    const acceptAll = { verify: async () => true, checkDelta: () => 0 };
+    const service = new TOTPService({
+      encryptionKey: ENCRYPTION_KEY,
+      issuer: 'Seam',
+      ...({ clock: frozen, verifier: acceptAll } as object),
+    });
+    const secret = totpSecretFor(generateAuthenticatorSecret());
+    const real = generateAuthenticatorToken(secret.secret);
+    expect(service.generateToken(secret)).toBe(real);
+    expect(await service.verifyToken(secret, real === '123456' ? '654321' : '123456')).toBe(false);
+
+    const storage = new MemoryStorageAdapter();
+    await storage.init();
+    const bootstrap = new BootstrapService({
+      ...bootstrapConfig(storage),
+      ...({ clock: frozen, generateBackupCodes: () => ['AAAA-AAAA'] } as object),
+    });
+    const before = Date.now();
+    const { state, backupCodes } = await bootstrap.initiate({
+      handle: 'firstadmin',
+      password: 'pw-A1!aaaaaaa',
+      displayName: 'A',
+    });
+    expect(state.timestamp).toBeGreaterThanOrEqual(before);
+    expect(backupCodes).toHaveLength(5);
+    expect(backupCodes).not.toContain('AAAA-AAAA');
+
+    const manager = new SessionManager({
+      storage,
+      config: sessionConfig,
+      ...({ clock: createManualClock(Date.UTC(2100, 0, 1)) } as object),
+    });
+    const session = await manager.createSession('u1', { handle: 'u1', role: 'member' });
+    expect(manager.isSessionValid(session)).toBe(true);
   });
 
   it('BootstrapService without seams mints random production-format codes and system timestamps', async () => {
@@ -143,10 +168,11 @@ describe('production defaults are unchanged', () => {
   });
 });
 
-describe('injected clock and verifier', () => {
+describe('test clock through the gated ./testing build', () => {
   it('drives TOTP generation, verification and the replay step from the clock', async () => {
     const clock = createManualClock(FIXED_EPOCH_MS);
-    const service = new TOTPService({ encryptionKey: ENCRYPTION_KEY, issuer: 'Seam', clock });
+    const service = createTestTOTPService({ encryptionKey: ENCRYPTION_KEY, issuer: 'Seam' }, { clock });
+    expect(service).toBeInstanceOf(TOTPService);
     const secret = totpSecretFor(generateAuthenticatorSecret());
 
     const token = service.generateToken(secret);
@@ -164,35 +190,24 @@ describe('injected clock and verifier', () => {
     expect(second.step).toBe((first.step as number) + 20);
   });
 
-  it('routes verification through an injected verifier, including the unknown-user path', async () => {
-    const calls: Array<[string, string, number | undefined]> = [];
-    const verifier: TotpVerifier = {
-      verify: async (secret, token, epoch) => {
-        calls.push([secret, token, epoch]);
-        return token === 'ok';
-      },
-      checkDelta: (_secret, token) => (token === 'ok' ? 0 : null),
-    };
+  it('keeps otplib verification: a wrong code fails at the clock time, the unknown-user path too', async () => {
     const clock: Clock = { now: () => FIXED_EPOCH_MS };
-    const service = new TOTPService({ encryptionKey: ENCRYPTION_KEY, issuer: 'Seam', clock, verifier });
-    const secret = totpSecretFor('SEAMSECRET');
+    const service = createTestTOTPService({ encryptionKey: ENCRYPTION_KEY, issuer: 'Seam' }, { clock });
+    const secret = totpSecretFor(generateAuthenticatorSecret());
+    const token = service.generateToken(secret);
+    const wrong = token === '000000' ? '000001' : '000000';
 
-    expect(await service.verifyToken(secret, 'ok')).toBe(true);
-    expect(await service.verifyToken(secret, 'no')).toBe(false);
-    expect(await service.verifyToken(null, 'ok')).toBe(false);
-    expect(calls.map((call) => call[2])).toEqual([FIXED_EPOCH_MS / 1000, FIXED_EPOCH_MS / 1000, FIXED_EPOCH_MS / 1000]);
-    expect(calls[2][0]).not.toBe('SEAMSECRET');
-    expect(await service.verifyTokenWithStep(secret, 'ok')).toEqual({
-      valid: true,
-      step: Math.floor(FIXED_EPOCH_MS / 1000 / 30),
-    });
+    expect(await service.verifyToken(secret, token)).toBe(true);
+    expect(await service.verifyToken(secret, wrong)).toBe(false);
+    expect(await service.verifyToken(null, token)).toBe(false);
+    expect(await service.verifyTokenWithStep(null, token)).toEqual({ valid: false });
   });
 
   it('expires bootstrap state and sessions when the clock moves', async () => {
     const storage = new MemoryStorageAdapter();
     await storage.init();
     const clock = createManualClock(Date.now());
-    const service = new BootstrapService(bootstrapConfig(storage, { clock }));
+    const service = createTestBootstrapService(bootstrapConfig(storage), { clock });
     const { state } = await service.initiate({ handle: 'firstadmin', password: 'pw-A1!aaaaaaa', displayName: 'A' });
     expect(state.timestamp).toBe(clock.now());
 
@@ -204,11 +219,21 @@ describe('injected clock and verifier', () => {
     });
     expect(await storage.hasUsers()).toBe(false);
 
-    const manager = new SessionManager({ storage, config: sessionConfig, clock });
+    const manager = createTestSessionManager({ storage, config: sessionConfig }, { clock });
+    expect(manager).toBeInstanceOf(SessionManager);
     const session = await manager.createSession('u1', { handle: 'u1', role: 'member' });
     expect(manager.isSessionValid(session)).toBe(true);
     clock.advance(8 * 24 * 60 * 60 * 1000);
     expect(manager.isSessionValid(session)).toBe(false);
+  });
+
+  it('attaches seams to the one instance it creates; plain instances keep system time', () => {
+    const clock = createManualClock(FIXED_EPOCH_MS);
+    const seamed = createTestTOTPService({ encryptionKey: ENCRYPTION_KEY, issuer: 'Seam' }, { clock });
+    const plain = new TOTPService({ encryptionKey: ENCRYPTION_KEY, issuer: 'Seam' });
+    const secret = totpSecretFor(generateAuthenticatorSecret());
+    expect(seamed.generateToken(secret)).toBe(generateAuthenticatorToken(secret.secret, FIXED_EPOCH_MS / 1000));
+    expect(plain.generateToken(secret)).toBe(generateAuthenticatorToken(secret.secret));
   });
 });
 
@@ -232,11 +257,9 @@ describe('deterministic recovery codes', () => {
   it('is used by BootstrapService only when injected', async () => {
     const storage = new MemoryStorageAdapter();
     await storage.init();
-    const service = new BootstrapService(
-      bootstrapConfig(storage, {
-        generateBackupCodes: createDeterministicBackupCodeGenerator('run-1'),
-      }),
-    );
+    const service = createTestBootstrapService(bootstrapConfig(storage), {
+      generateBackupCodes: createDeterministicBackupCodeGenerator('run-1'),
+    });
     const { state, backupCodes } = await service.initiate({
       handle: 'firstadmin',
       password: 'pw-A1!aaaaaaa',
@@ -251,51 +274,72 @@ describe('deterministic recovery codes', () => {
 });
 
 describe('test admission issuer', () => {
-  const enabled = { NODE_ENV: 'test', [TEST_ADMISSION_ENV]: 'enabled' };
-
-  it('fails closed unless explicitly enabled, and always in production', () => {
-    expect(isTestAdmissionAllowed({})).toBe(false);
-    expect(isTestAdmissionAllowed({ NODE_ENV: 'test' })).toBe(false);
-    expect(isTestAdmissionAllowed({ [TEST_ADMISSION_ENV]: '1' })).toBe(false);
-    expect(isTestAdmissionAllowed({ [TEST_ADMISSION_ENV]: 'true' })).toBe(false);
-    expect(isTestAdmissionAllowed({ NODE_ENV: 'production', [TEST_ADMISSION_ENV]: 'enabled' })).toBe(false);
-    expect(isTestAdmissionAllowed(enabled)).toBe(true);
-
-    expect(() => assertTestAdmissionAllowed({})).toThrow(TestAdmissionDisabledError);
-    expect(() =>
-      assertTestAdmissionAllowed({ NODE_ENV: 'production', [TEST_ADMISSION_ENV]: 'enabled' }),
-    ).toThrow(/NODE_ENV is production/);
-    expect(() => assertTestAdmissionAllowed(enabled)).not.toThrow();
+  // RS5: the gate reads only the live process.env. Tests drive it through
+  // vi.stubEnv, which writes process.env, never through a config object.
+  beforeEach(() => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv(TEST_ADMISSION_ENV, 'enabled');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
-  it('refuses construction and admission when the gate is closed', async () => {
+  it('fails closed unless NODE_ENV is exactly "test" and the opt-in is set', () => {
+    expect(isTestAdmissionAllowed()).toBe(true);
+    expect(() => assertTestAdmissionAllowed()).not.toThrow();
+
+    for (const value of ['1', 'true', 'ENABLED', '']) {
+      vi.stubEnv(TEST_ADMISSION_ENV, value);
+      expect(isTestAdmissionAllowed()).toBe(false);
+      expect(() => assertTestAdmissionAllowed()).toThrow(TestAdmissionDisabledError);
+    }
+    vi.stubEnv(TEST_ADMISSION_ENV, undefined);
+    expect(() => assertTestAdmissionAllowed()).toThrow(/TINYLAND_AUTH_TEST_ADMISSION is not "enabled"/);
+
+    vi.stubEnv(TEST_ADMISSION_ENV, 'enabled');
+    for (const nodeEnv of ['production', 'development', 'TEST', '']) {
+      vi.stubEnv('NODE_ENV', nodeEnv);
+      expect(isTestAdmissionAllowed()).toBe(false);
+      expect(() => assertTestAdmissionAllowed()).toThrow(TestAdmissionDisabledError);
+      expect(() => assertTestEnvironment()).toThrow(TestingEntryRefusedError);
+    }
+    vi.stubEnv('NODE_ENV', undefined);
+    expect(() => assertTestAdmissionAllowed()).toThrow(/NODE_ENV is unset/);
+    expect(() => assertTestEnvironment()).toThrow(/NODE_ENV is unset/);
+  });
+
+  it('takes no caller-supplied environment: an env option cannot open the gate', async () => {
     const storage = new MemoryStorageAdapter();
     await storage.init();
-    expect(() => createTestAdmissionIssuer({ storage, encryptTOTPSecret, env: {} })).toThrow(
+    vi.stubEnv(TEST_ADMISSION_ENV, undefined);
+    const smuggled = { env: { NODE_ENV: 'test', [TEST_ADMISSION_ENV]: 'enabled' } } as object;
+    expect(() => createTestAdmissionIssuer({ storage, encryptTOTPSecret, ...smuggled })).toThrow(
       TestAdmissionDisabledError,
     );
-    expect(() =>
-      createTestAdmissionIssuer({
-        storage,
-        encryptTOTPSecret,
-        env: { NODE_ENV: 'production', [TEST_ADMISSION_ENV]: 'enabled' },
-      }),
-    ).toThrow(TestAdmissionDisabledError);
+    expect(isTestAdmissionAllowed.length).toBe(0);
+    expect(assertTestAdmissionAllowed.length).toBe(0);
+    expect(assertTestEnvironment.length).toBe(0);
+  });
 
-    const env: Record<string, string | undefined> = { ...enabled };
-    const issuer = createTestAdmissionIssuer({ storage, encryptTOTPSecret, env });
-    env.NODE_ENV = 'production';
+  it('re-checks process.env on every admit()', async () => {
+    const storage = new MemoryStorageAdapter();
+    await storage.init();
+    const issuer = createTestAdmissionIssuer({ storage, encryptTOTPSecret });
+    vi.stubEnv('NODE_ENV', 'production');
+    await expect(issuer.admit({ role: 'member' })).rejects.toBeInstanceOf(TestAdmissionDisabledError);
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv(TEST_ADMISSION_ENV, undefined);
     await expect(issuer.admit({ role: 'member' })).rejects.toBeInstanceOf(TestAdmissionDisabledError);
     expect(await storage.hasUsers()).toBe(false);
   });
 
-  it('defaults to process.env and so is closed under the unit-test runner', async () => {
-    const storage = new MemoryStorageAdapter();
-    await storage.init();
-    expect(process.env[TEST_ADMISSION_ENV]).toBeUndefined();
-    expect(() => createTestAdmissionIssuer({ storage, encryptTOTPSecret })).toThrow(
-      TestAdmissionDisabledError,
+  it('refuses seam factories once NODE_ENV leaves "test"', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const clock = createManualClock(0);
+    expect(() => createTestTOTPService({ encryptionKey: ENCRYPTION_KEY, issuer: 'Seam' }, { clock })).toThrow(
+      TestingEntryRefusedError,
     );
+    expect(() => generateTestIdentity('member')).toThrow(TestingEntryRefusedError);
   });
 
   it('admits a generated identity at every role with working credentials', async () => {
@@ -304,7 +348,6 @@ describe('test admission issuer', () => {
     const issuer = createTestAdmissionIssuer({
       storage,
       encryptTOTPSecret,
-      env: enabled,
       backupCodesCount: 3,
       generateBackupCodes: createDeterministicBackupCodeGenerator('admission'),
     });
@@ -349,7 +392,7 @@ describe('test admission issuer', () => {
 
     const storage = new MemoryStorageAdapter();
     await storage.init();
-    const issuer = createTestAdmissionIssuer({ storage, encryptTOTPSecret, env: enabled });
+    const issuer = createTestAdmissionIssuer({ storage, encryptTOTPSecret });
     await expect(issuer.admit({ role: 'admin', identity: one })).rejects.toThrow(/does not match/);
     const admitted = await issuer.admit({ role: 'moderator', identity: one, createSession: false });
     expect(admitted.session).toBeUndefined();

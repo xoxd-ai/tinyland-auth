@@ -55,7 +55,7 @@ describe('package release authority', () => {
       expect(workflow).toContain('metadata_check_command: pnpm check:release-metadata');
       expect(workflow).toContain('unit_test_command: pnpm test && pnpm test:bazel');
       expect(workflow).toContain(
-        'package_check_command: pnpm check:invitation-authority && pnpm check:package',
+        'package_check_command: pnpm check:invitation-authority && pnpm check:package && pnpm check:production-artifact',
       );
       expect(workflow).toContain('bazel_targets: "//:pkg //:test //:typecheck"');
       expect(workflow).toContain('npm_publish_mode: disabled');
@@ -74,6 +74,24 @@ describe('package release authority', () => {
       'npx --yes @bazel/bazelisk test //:test //:typecheck --test_output=errors',
     );
     expect(bazelTestScript).not.toMatch(/@bazel\/bazelisk build\b/);
+  });
+
+  it('runs the RS5/RS6 production-exclusion proof on the npm tarball and the Bazel artifact', async () => {
+    const packageJson = JSON.parse(await readText('package.json')) as {
+      scripts?: Record<string, string>;
+    };
+    const bazelTestScript = await readText('scripts/ci-bazel-test.sh');
+    const buildBazel = await readText('BUILD.bazel');
+
+    expect(packageJson.scripts?.['check:production-artifact']).toBe(
+      'node scripts/pack-and-check-production-artifact.mjs',
+    );
+    expect(bazelTestScript).toContain(
+      'npx --yes @bazel/bazelisk test //:production_artifact_test --test_output=errors',
+    );
+    expect(buildBazel).toMatch(
+      /js_test\(\s*name = "production_artifact_test",\s*args = \["\$\(rootpath :pkg\)"\]/,
+    );
   });
 
   it('checks release metadata before package validation and publication', async () => {

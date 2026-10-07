@@ -8,32 +8,25 @@
 
 import type { Session, SessionMetadata, SessionUser, AdminUser, SessionConfig } from '../../types/index.js';
 import type { SessionStorage } from '../../storage/interface.js';
-import type { Clock } from '../clock/index.js';
+import { nowMsFor } from '../seams/index.js';
 
 export interface SessionManagerConfig {
   storage: SessionStorage;
   config: SessionConfig;
-
-  /**
-   * Time source for the manager's own expiry and renewal checks. Defaults to
-   * the system clock. Storage adapters keep their own expiry checks.
-   */
-  clock?: Clock;
 }
 
 export class SessionManager {
   private storage: SessionStorage;
   private config: SessionConfig;
-  private clock?: Clock;
 
-  constructor({ storage, config, clock }: SessionManagerConfig) {
+  constructor({ storage, config }: SessionManagerConfig) {
     this.storage = storage;
     this.config = config;
-    this.clock = clock;
   }
 
+  /** System time; a test clock is attachable only via the gated ./testing build. */
   private now(): Date {
-    return this.clock ? new Date(this.clock.now()) : new Date();
+    return new Date(nowMsFor(this));
   }
 
   

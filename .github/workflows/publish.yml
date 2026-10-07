@@ -32,7 +32,7 @@ jobs:
       typecheck_command: pnpm typecheck
       unit_test_command: pnpm test && pnpm test:bazel
       build_command: pnpm build
-      package_check_command: pnpm check:invitation-authority && pnpm check:package
+      package_check_command: pnpm check:invitation-authority && pnpm check:package && pnpm check:production-artifact
       bazel_targets: "//:pkg //:test //:typecheck"
       package_dir: ./bazel-bin/pkg
       npm_access: public
