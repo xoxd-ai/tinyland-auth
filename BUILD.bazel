@@ -163,10 +163,12 @@ js_test(
         "scripts/check-invitation-authority.mjs",
         "src/index.ts",
         ":node_modules/typescript",
-        ":tinyland_auth_types",
+        ":tinyland_auth",
     ],
     chdir = package_name(),
     entry_point = "scripts/check-invitation-authority.mjs",
+    # The guard reads dist/index.d.ts; .d.ts outputs are not runfiles by default.
+    include_types = True,
 )
 
 publint_bin.publint_test(

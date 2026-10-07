@@ -50,7 +50,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "build:testing": "tsc -p tsconfig.testing.json",
     "check:invitation-authority": "node scripts/check-invitation-authority.mjs",
     "check:release-metadata": "node scripts/check-release-metadata.mjs",
@@ -58,7 +58,7 @@
     "dev": "tsc --watch",
     "clean": "rm -rf dist dist-testing",
     "check:package": "publint",
-    "prepublishOnly": "pnpm build && pnpm check:invitation-authority && pnpm check:package",
+    "prepublishOnly": "pnpm build && pnpm check:invitation-authority && pnpm check:package && pnpm check:production-artifact",
     "test": "vitest run",
     "test:bazel": "bash scripts/ci-bazel-test.sh",
     "test:coverage": "vitest --coverage",

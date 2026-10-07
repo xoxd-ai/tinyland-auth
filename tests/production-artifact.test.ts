@@ -239,7 +239,7 @@ describe('production entry has no development or seam bypass (RP2)', () => {
     ['unset', undefined],
     ['development', 'development'],
   ] as Array<[string, string | undefined]>) {
-    it(`requireMTLS admits no request without a client certificate (NODE_ENV ${label})`, () => {
+    it(`requireMTLS has no host or NODE_ENV pass for a request without certificate headers (NODE_ENV ${label})`, () => {
       const result = runNode(mtlsProbe(), nodeEnv);
       expect(result.stderr).toBe('');
       expect(result.status).toBe(0);
@@ -293,6 +293,77 @@ describe('production entry has no development or seam bypass (RP2)', () => {
     expect(runNode(script, 'development').stdout).toBe('false');
     expect(runNode(script, 'test').stdout).toBe('false');
   });
+
+  // R1-B1: 0.7.x BootstrapServiceConfig took a caller-supplied verifyTOTP, so
+  // `verifyTOTP: () => true` minted the first super_admin with any code.
+  const bootstrapProbe = () => `
+    const pkg = await import(${distUrl('index.js')});
+    const otp = await import(${distUrl('totp/otplib-compat.js')});
+    const storage = new pkg.MemoryStorageAdapter();
+    await storage.init();
+    const service = pkg.createBootstrapService({
+      storage,
+      appName: 'RP2',
+      bcryptRounds: 4,
+      backupCodesCount: 3,
+      generateQRCode: async () => 'qr',
+      encryptTOTPSecret: async (handle, secret) => ({ handle, encryptedSecret: 'x' + secret.length }),
+      // Stale 0.7.x keys: both must be ignored.
+      verifyTOTP: () => true,
+      generateTOTPSecret: () => 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP',
+    });
+    const request = { handle: 'firstadmin', password: 'pw-A1!aaaaaaa', displayName: 'A' };
+    const { state } = await service.initiate(request);
+    const real = otp.generateAuthenticatorToken(state.totpSecret);
+    const out = {
+      pinnedSecretIgnored: state.totpSecret !== 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP',
+      secretLength: state.totpSecret.length >= 32,
+    };
+    const wrong = real === '000000' ? '000001' : '000000';
+    out.arbitrary = [];
+    for (const code of [wrong, '', 'accept', real + '0', undefined]) {
+      const result = await service.complete(state, { handle: 'firstadmin', totpCode: code });
+      out.arbitrary.push(result.success);
+    }
+    out.usersAfterArbitrary = await storage.hasUsers();
+    const ok = await service.complete(state, { handle: 'firstadmin', totpCode: real });
+    out.realCode = ok.success && ok.user.role;
+    const replay = await service.complete(state, { handle: 'firstadmin', totpCode: real });
+    out.replay = replay.success;
+    process.stdout.write(JSON.stringify(out));
+  `;
+
+  for (const [label, nodeEnv] of [
+    ['production', 'production'],
+    ['unset', undefined],
+    ['development', 'development'],
+  ] as Array<[string, string | undefined]>) {
+    it(`first-admin bootstrap verifies the code itself; no caller verifier is honoured (NODE_ENV ${label})`, () => {
+      const result = runNode(bootstrapProbe(), nodeEnv);
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        pinnedSecretIgnored: true,
+        secretLength: true,
+        arbitrary: [false, false, false, false, false],
+        usersAfterArbitrary: false,
+        realCode: 'super_admin',
+        replay: false,
+      });
+    });
+  }
+
+  it('the artifact check turns red when a caller-injected bootstrap verifier comes back', () => {
+    const dir = contaminatedCopy('pkg-bootstrap-verifier-regression');
+    appendFileSync(
+      join(dir, 'dist/modules/bootstrap/index.js'),
+      '\nexport const legacy = (config) => config.verifyTOTP;\n',
+    );
+
+    const result = checkArtifact(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('contains "verifyTOTP"');
+  }, 120_000);
 
   it('the artifact check turns red when the mTLS development auto-pass comes back', () => {
     const dir = contaminatedCopy('pkg-mtls-dev-regression');

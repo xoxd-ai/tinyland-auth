@@ -58,9 +58,7 @@ const bootstrapConfig = (
   appName: 'Seam Test',
   bcryptRounds: 4,
   backupCodesCount: 5,
-  generateTOTPSecret: () => generateAuthenticatorSecret(),
   generateQRCode: async () => 'data:image/png;base64,x',
-  verifyTOTP: (_secret, token) => token === 'accept',
   encryptTOTPSecret,
   ...overrides,
 });
@@ -219,6 +217,16 @@ describe('test clock through the gated ./testing build', () => {
     });
     expect(await storage.hasUsers()).toBe(false);
 
+    // The installed clock also drives first-admin TOTP verification.
+    const fresh = createTestBootstrapService(bootstrapConfig(storage), { clock: createManualClock(FIXED_EPOCH_MS) });
+    const pending = (await fresh.initiate({ handle: 'firstadmin', password: 'pw-A1!aaaaaaa', displayName: 'A' })).state;
+    const atClock = generateAuthenticatorToken(pending.totpSecret, FIXED_EPOCH_MS / 1000);
+    const atSystem = generateAuthenticatorToken(pending.totpSecret);
+    if (atSystem !== atClock) {
+      expect((await fresh.complete(pending, { handle: 'firstadmin', totpCode: atSystem })).success).toBe(false);
+    }
+    expect((await fresh.complete(pending, { handle: 'firstadmin', totpCode: atClock })).success).toBe(true);
+
     const manager = createTestSessionManager({ storage, config: sessionConfig }, { clock });
     expect(manager).toBeInstanceOf(SessionManager);
     const session = await manager.createSession('u1', { handle: 'u1', role: 'member' });
@@ -267,7 +275,10 @@ describe('deterministic recovery codes', () => {
     });
     expect(backupCodes).toEqual(createDeterministicBackupCodeGenerator('run-1')(5));
 
-    const completed = await service.complete(state, { handle: 'firstadmin', totpCode: 'accept' });
+    const completed = await service.complete(state, {
+      handle: 'firstadmin',
+      totpCode: generateAuthenticatorToken(state.totpSecret),
+    });
     expect(completed.success).toBe(true);
     expect(completed.backupCodes).toEqual(backupCodes);
   });

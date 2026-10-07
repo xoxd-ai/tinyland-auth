@@ -42,9 +42,15 @@ export interface CertificateInfo {
 /**
  * Options for client-certificate checks.
  *
- * There is no development or bypass option (1.0.0, RP2): a request is admitted
- * only with a verified client certificate forwarded by the TLS-terminating
- * proxy. Unknown keys, such as a stale pre-1.0 development flag, are ignored.
+ * There is no development or bypass option (1.0.0, RP2): no host or NODE_ENV
+ * admits a request that carries no forwarded certificate headers. Unknown keys,
+ * such as a stale pre-1.0 development flag, are ignored.
+ *
+ * Trust model: these checks read headers set by the TLS-terminating proxy and
+ * trust them. The proxy must overwrite or strip every client-supplied copy of
+ * the certificate headers. Without `validFingerprints`, a forwarded subject
+ * with the verify header absent or `NONE` is admitted, so set
+ * `validFingerprints` wherever the edge is not guaranteed to strip them.
  */
 export interface MTLSOptions {
   /** When set, only certificates whose `sha256:` fingerprint is listed pass. */

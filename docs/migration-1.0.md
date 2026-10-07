@@ -1,7 +1,10 @@
 # Migrating to @tummycrypt/tinyland-auth 1.0.0
 
 1.0.0 removes the fixed-code TOTP bypass, the mTLS development auto-pass and
-every test seam from the production entry points (ruling RS6, RP2). It also moves the test harness behind a
+the caller-injected first-admin TOTP verifier from the production entry
+points, and leaves no public option that installs a test seam (ruling RS6,
+RP2). The internal seam readers and a `NODE_ENV=test`-gated writer still ship,
+unexported, in `dist/core/seams`. It also moves the test harness behind a
 hard gate that keeps it out of the published package (ruling RS5). Carrier:
 TIN-5766. The consumer audit for this change is W3-audit (2026-10-07).
 
@@ -14,17 +17,25 @@ TIN-5766. The consumer audit for this change is W3-audit (2026-10-07).
 | sets `devMode` in a `TOTPConfig` object or a copy of `DEFAULT_AUTH_CONFIG.totp` | Delete the field. Spreading `DEFAULT_AUTH_CONFIG.totp` still compiles. |
 | imported `TotpVerifier`, `otplibTotpVerifier`, `Clock`, `systemClock` or `BackupCodeGenerator` | These were never in a published release. Remove the import. |
 | relies on `requireMTLS` / `extractCertificateFromEvent` passing on `localhost`, `*.local` or with `NODE_ENV` unset or `development` | Put a TLS-terminating proxy that forwards a verified client certificate in front of the app, also in development. There is no development pass. |
+| passes `verifyTOTP` to `createBootstrapService` / `new BootstrapService` | Delete it. `complete()` verifies the code itself against the state's secret (otplib, the same step, window and digits as `TOTPService`). A stale value is ignored. |
+| passes `generateTOTPSecret` to `createBootstrapService` / `new BootstrapService` | Delete it. `initiate()` generates a 160-bit secret from the CSPRNG. A stale value is ignored. The `./totp` helper `generateTOTPSecret` itself is unchanged. |
+| calls `BootstrapService.complete()` a second time, or completes a second state after the first admin exists | It now returns `Bootstrap not allowed: users already exist`. |
 | passes `isDevelopment` to `extractCertificate`, `getCertificateFingerprint` or an `*FromEvent` helper | Delete it. The option is gone and a stale value is ignored. |
 | sets `isDevelopment` in `createAuthConfig({...})` or an `AuthConfig` | Delete the field. No code read it. |
 | relies on `DEFAULT_COOKIE_CONFIG.secure` being `false` with `NODE_ENV` unset | Set `NODE_ENV=development` for local HTTP, or pass `secure: false` explicitly. |
 | imported `@tummycrypt/tinyland-auth/testing` | It is not published. Drive the real journeys, or run the package's own tests from this repo. |
 
-No TOTP behaviour changes for a consumer that did not set `testCode`. mTLS
+No TOTP behaviour changes for a consumer that did not set `testCode`, apart
+from first-admin bootstrap, which now always verifies the code itself. mTLS
 checks now fail closed for any request without a forwarded client
 certificate, whatever the host or `NODE_ENV`. The 2026-10-07 audit found no
 caller of the mTLS helpers, `isDevelopment` or `DEFAULT_COOKIE_CONFIG` in
 tinyland.dev, elders.tinyland.dev, dollhouse-farm or
-euthanasiapettingparts.com.
+euthanasiapettingparts.com, and no consumer that passes
+`BootstrapServiceConfig.verifyTOTP` or `generateTOTPSecret` (gh code search
+across xoxd-ai and Jesssullivan; tinyland.dev `src/` and `server/` never
+construct `BootstrapService`). The mTLS helpers still trust the forwarded
+certificate headers; see the trust note on `MTLSOptions`.
 
 ## Known consumers (audit 2026-10-07)
 

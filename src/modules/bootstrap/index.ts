@@ -18,11 +18,23 @@ import type {
 } from '../../types/api.js';
 import { hashPassword } from '../../core/security/password.js';
 import { generateBackupCodes, createBackupCodeSet } from '../../core/backup-codes/index.js';
-import { nowMsFor, seamsOf } from '../../core/seams/index.js';
+import { epochSecondsFor, nowMsFor, seamsOf } from '../../core/seams/index.js';
+import {
+  generateAuthenticatorSecret,
+  verifyAuthenticatorToken,
+} from '../../totp/otplib-compat.js';
 
 
 
 
+/**
+ * First-admin bootstrap configuration.
+ *
+ * There is deliberately no TOTP verifier and no TOTP secret generator here
+ * (1.0.0, RS6/RP2): the service generates the enrolment secret from the
+ * CSPRNG and verifies the authenticator code itself, so no caller-supplied
+ * callback can accept an arbitrary code or pin the first admin's seed.
+ */
 export interface BootstrapServiceConfig {
   
   storage: BootstrapStorage;
@@ -33,11 +45,8 @@ export interface BootstrapServiceConfig {
   
   backupCodesCount: number;
   
-  generateTOTPSecret: () => string;
-  
+  /** Renders the enrolment QR code. Presentation only; it decides nothing. */
   generateQRCode: (handle: string, secret: string, issuer: string) => Promise<string>;
-  
-  verifyTOTP: (secret: string, token: string) => boolean;
   
   encryptTOTPSecret: (handle: string, secret: string) => Promise<EncryptedTOTPSecret>;
 }
@@ -45,6 +54,14 @@ export interface BootstrapServiceConfig {
 
 
 
+/**
+ * State carried between `initiate()` and `complete()`.
+ *
+ * It holds the password hash and the plaintext TOTP secret, and `complete()`
+ * trusts it. Keep it server-side (a server session store) or seal it
+ * (authenticated encryption) between the two steps; never round-trip it
+ * through the client in the clear.
+ */
 export interface BootstrapState {
   handle: string;
   passwordHash: string;
@@ -157,7 +174,7 @@ export class BootstrapService {
     });
 
     
-    const totpSecret = this.config.generateTOTPSecret();
+    const totpSecret = generateAuthenticatorSecret();
 
     
     const qrCodeUrl = await this.config.generateQRCode(
@@ -237,8 +254,19 @@ export class BootstrapService {
     }
 
     
-    const isValidTOTP = this.config.verifyTOTP(state.totpSecret, verification.totpCode);
-    if (!isValidTOTP) {
+    // First admin is still a fresh install: refuse a replayed state, or a
+    // second state, once any user exists. Not atomic: two completes racing
+    // before either writes can both pass, so storage should still enforce a
+    // unique handle and a single bootstrap.
+    if (await this.config.storage.hasUsers()) {
+      return {
+        success: false,
+        error: 'Bootstrap not allowed: users already exist',
+      };
+    }
+
+    // Verified here, never by a caller-supplied callback (RS6/RP2).
+    if (!(await this.verifyCode(state.totpSecret, verification.totpCode))) {
       return {
         success: false,
         error: 'Invalid TOTP code. Please check your authenticator app.',
@@ -324,6 +352,18 @@ export class BootstrapService {
 
   
 
+
+  private async verifyCode(secret: string, code: unknown): Promise<boolean> {
+    if (typeof code !== 'string' || !/^\d{6,8}$/.test(code)) {
+      return false;
+    }
+    try {
+      return await verifyAuthenticatorToken(secret, code, epochSecondsFor(this));
+    } catch {
+      // A state carrying a malformed or below-floor secret never verifies.
+      return false;
+    }
+  }
 
   isStateValid(state: BootstrapState, maxAgeMs: number = 600000): boolean {
     if (!state || !state.timestamp) {

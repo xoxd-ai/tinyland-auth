@@ -7,3 +7,8 @@ npx --yes @bazel/bazelisk test //:test //:typecheck --test_output=errors
 # RS5 / RS6: the production-exclusion proof against the published //:pkg.
 printf 'Executing Bazel test: //:production_artifact_test\n'
 npx --yes @bazel/bazelisk test //:production_artifact_test --test_output=errors
+
+# TIN-4435/AP3: the canonical-source qualification targets the tinyland.dev
+# candidate-image publisher expects. Run here so a broken target goes red in CI.
+printf 'Executing Bazel tests: qualification targets\n'
+npx --yes @bazel/bazelisk test //:release_metadata_test //:invitation_authority_test //:package_artifact_test --test_output=errors

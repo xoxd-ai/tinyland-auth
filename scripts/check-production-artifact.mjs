@@ -74,6 +74,9 @@ const REMOVED_RS6_NAMES = [
   'isDevelopment',
   'detectDevelopment',
   'dev-mode-no-cert',
+  // Caller-injected first-admin TOTP verifier removed in 1.0.0 (RS6/RP2):
+  // BootstrapService verifies the code itself.
+  'verifyTOTP',
 ];
 
 // Internal seam writer: shipped in dist/core/seams (unreachable through the

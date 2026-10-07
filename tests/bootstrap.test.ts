@@ -7,11 +7,14 @@ import { BootstrapService, createBootstrapService } from '../src/modules/bootstr
 import { MemoryStorageAdapter } from '../src/storage/memory.js';
 import type { BootstrapServiceConfig, BootstrapState } from '../src/modules/bootstrap/index.js';
 import type { EncryptedTOTPSecret } from '../src/types/auth.js';
+import { generateAuthenticatorToken } from '../src/totp/otplib-compat.js';
 
 
-const mockGenerateTOTPSecret = () => 'MOCK_SECRET_BASE32';
 const mockGenerateQRCode = async () => 'data:image/png;base64,mockqrcode';
-const mockVerifyTOTP = (secret: string, token: string) => token === '123456';
+// The service generates and verifies the TOTP secret itself (1.0.0, RS6/RP2),
+// so tests compute the real current code from the state they were handed.
+const codeFor = (state: BootstrapState) => generateAuthenticatorToken(state.totpSecret);
+const wrongCodeFor = (state: BootstrapState) => (codeFor(state) === '000000' ? '000001' : '000000');
 const mockEncryptTOTPSecret = async (handle: string, secret: string): Promise<EncryptedTOTPSecret> => ({
   userId: 'pending',
   handle,
@@ -38,9 +41,7 @@ describe('BootstrapService', () => {
       appName: 'Test App',
       bcryptRounds: 4, 
       backupCodesCount: 5,
-      generateTOTPSecret: mockGenerateTOTPSecret,
       generateQRCode: mockGenerateQRCode,
-      verifyTOTP: mockVerifyTOTP,
       encryptTOTPSecret: mockEncryptTOTPSecret,
     };
 
@@ -91,7 +92,7 @@ describe('BootstrapService', () => {
       expect(result.state.handle).toBe('admin');
       expect(result.state.displayName).toBe('Admin User');
       expect(result.state.email).toBe('admin@test.com');
-      expect(result.state.totpSecret).toBe('MOCK_SECRET_BASE32');
+      expect(result.state.totpSecret).toMatch(/^[A-Z2-7]{32,}$/);
       expect(result.state.backupCodes).toHaveLength(5);
       expect(result.qrCodeUrl).toBe('data:image/png;base64,mockqrcode');
       expect(result.backupCodes).toEqual(result.state.backupCodes);
@@ -187,7 +188,7 @@ describe('BootstrapService', () => {
     it('should complete bootstrap with valid TOTP', async () => {
       const result = await service.complete(validState, {
         handle: 'admin',
-        totpCode: '123456', 
+        totpCode: codeFor(validState),
       });
 
       expect(result.success).toBe(true);
@@ -206,7 +207,7 @@ describe('BootstrapService', () => {
     it('should reject invalid TOTP code', async () => {
       const result = await service.complete(validState, {
         handle: 'admin',
-        totpCode: '000000', 
+        totpCode: wrongCodeFor(validState),
       });
 
       expect(result.success).toBe(false);
@@ -220,7 +221,7 @@ describe('BootstrapService', () => {
     it('should reject mismatched handle', async () => {
       const result = await service.complete(validState, {
         handle: 'different',
-        totpCode: '123456',
+        totpCode: codeFor(validState),
       });
 
       expect(result.success).toBe(false);
@@ -235,7 +236,7 @@ describe('BootstrapService', () => {
 
       const result = await service.complete(expiredState, {
         handle: 'admin',
-        totpCode: '123456',
+        totpCode: codeFor(validState),
       });
 
       expect(result.success).toBe(false);
@@ -245,7 +246,7 @@ describe('BootstrapService', () => {
     it('should save TOTP secret and backup codes', async () => {
       await service.complete(validState, {
         handle: 'admin',
-        totpCode: '123456',
+        totpCode: codeFor(validState),
       });
 
       const secret = await storage.getTOTPSecret('admin');
@@ -261,13 +262,98 @@ describe('BootstrapService', () => {
     it('should log audit event', async () => {
       await service.complete(validState, {
         handle: 'admin',
-        totpCode: '123456',
+        totpCode: codeFor(validState),
       });
 
       const events = await storage.getRecentAuditEvents(10);
       const bootstrapEvent = events.find(e => e.type === 'BOOTSTRAP_COMPLETED');
       expect(bootstrapEvent).toBeDefined();
       expect(bootstrapEvent?.handle).toBe('admin');
+    });
+  });
+
+  describe('first-admin TOTP is verified by the service (RS6/RP2)', () => {
+    let validState: BootstrapState;
+
+    beforeEach(async () => {
+      validState = (
+        await service.initiate({ handle: 'admin', password: 'SecurePassword123!', displayName: 'Admin User' })
+      ).state;
+    });
+
+    it('generates a fresh 160-bit secret per initiate', async () => {
+      const other = new BootstrapService(config);
+      const second = (
+        await other.initiate({ handle: 'admin', password: 'SecurePassword123!', displayName: 'Admin User' })
+      ).state;
+      expect(validState.totpSecret).toMatch(/^[A-Z2-7]{32,}$/);
+      expect(second.totpSecret).not.toBe(validState.totpSecret);
+    });
+
+    it('ignores a stale verifyTOTP or generateTOTPSecret passed through the config', async () => {
+      const pinned = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+      const legacy = new BootstrapService({
+        ...config,
+        ...({ verifyTOTP: () => true, generateTOTPSecret: () => pinned } as object),
+      });
+      const { state } = await legacy.initiate({
+        handle: 'admin',
+        password: 'SecurePassword123!',
+        displayName: 'Admin User',
+      });
+      expect(state.totpSecret).not.toBe(pinned);
+
+      const result = await legacy.complete(state, { handle: 'admin', totpCode: wrongCodeFor(state) });
+      expect(result).toEqual({
+        success: false,
+        error: 'Invalid TOTP code. Please check your authenticator app.',
+      });
+      expect(await storage.hasUsers()).toBe(false);
+    });
+
+    it.each([
+      ['empty', ''],
+      ['non-numeric', 'accept'],
+      ['too long', '1234567890'],
+      ['not a string', 123456 as unknown as string],
+    ])('rejects a %s code', async (_label, totpCode) => {
+      const result = await service.complete(validState, { handle: 'admin', totpCode });
+      expect(result.success).toBe(false);
+      expect(await storage.hasUsers()).toBe(false);
+    });
+
+    it('rejects a state carrying a malformed or below-floor secret instead of throwing', async () => {
+      for (const totpSecret of ['MOCK_SECRET_BASE32', 'JBSWY3DP']) {
+        const result = await service.complete(
+          { ...validState, totpSecret },
+          { handle: 'admin', totpCode: '000000' },
+        );
+        expect(result.success).toBe(false);
+      }
+      expect(await storage.hasUsers()).toBe(false);
+    });
+
+    it('refuses to complete once any user exists (a replayed state or a later second state)', async () => {
+      const second = (
+        await new BootstrapService(config).initiate({
+          handle: 'admin2',
+          password: 'SecurePassword123!',
+          displayName: 'Second',
+        })
+      ).state;
+
+      expect((await service.complete(validState, { handle: 'admin', totpCode: codeFor(validState) })).success).toBe(
+        true,
+      );
+      expect(await service.complete(validState, { handle: 'admin', totpCode: codeFor(validState) })).toEqual({
+        success: false,
+        error: 'Bootstrap not allowed: users already exist',
+      });
+      expect(await service.complete(second, { handle: 'admin2', totpCode: codeFor(second) })).toEqual({
+        success: false,
+        error: 'Bootstrap not allowed: users already exist',
+      });
+      expect(await storage.getUserByHandle('admin2')).toBeNull();
     });
   });
 

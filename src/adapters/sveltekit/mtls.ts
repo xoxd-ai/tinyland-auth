@@ -58,9 +58,15 @@ export function extractCertificateFromEvent(
 
 
 /**
- * Admit the request only when the proxy forwarded a client certificate that
- * passes {@link extractCertificateFromEvent}. There is no host, NODE_ENV or
+ * Admit the request only when its forwarded certificate headers pass
+ * {@link extractCertificateFromEvent}. There is no host, NODE_ENV or
  * development short-circuit (1.0.0, RP2).
+ *
+ * Trust model: these checks read headers set by the TLS-terminating proxy and
+ * trust them. The proxy must overwrite or strip every client-supplied copy of
+ * the certificate headers. Without `validFingerprints`, a forwarded subject
+ * with the verify header absent or `NONE` is admitted, so set
+ * `validFingerprints` wherever the edge is not guaranteed to strip them.
  */
 export function requireMTLS(event: RequestEvent, options?: MTLSOptions): boolean {
   const certInfo = extractCertificateFromEvent(event, options);
