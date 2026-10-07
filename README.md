@@ -139,3 +139,36 @@ Every role at or above `member` holds `MEMBER_SELF_SERVICE_CORE`
 -- there are no hand-maintained role arrays. Machine-readable charter:
 `ROLE_CHARTER` and `PERMISSION_FEATURE_DOMAIN` in
 `src/types/permissions.ts`.
+
+## Test harness seams
+
+Services accept optional seams so an automated harness can drive auth flows
+without a human-operated browser. Leaving them unset keeps production
+behaviour: the system clock, otplib verification and CSPRNG recovery codes.
+
+| Seam | Where | Default |
+| --- | --- | --- |
+| `clock: Clock` | `TOTPServiceConfig`, `BootstrapServiceConfig`, `SessionManagerConfig` | system clock |
+| `verifier: TotpVerifier` | `TOTPServiceConfig` | `otplibTotpVerifier` |
+| `generateBackupCodes: BackupCodeGenerator` | `BootstrapServiceConfig` | `generateBackupCodes` |
+
+Test-only helpers live behind the explicit `@tummycrypt/tinyland-auth/testing`
+subpath and are never re-exported from the package index:
+
+```ts
+import {
+  createTestAdmissionIssuer,
+  createManualClock,
+  createDeterministicBackupCodeGenerator,
+  generateTestIdentity,
+} from '@tummycrypt/tinyland-auth/testing';
+```
+
+`createTestAdmissionIssuer` admits a generated per-run identity (handle,
+password and TOTP seed from the CSPRNG) at a requested role. It fails closed:
+it always throws when `NODE_ENV=production`, and otherwise requires
+`TINYLAND_AUTH_TEST_ADMISSION=enabled`. That runtime gate is the second line of
+defence. An application must also keep the import out of its production build
+(a build-time flag around a dynamic import) and assert that its production
+bundle does not contain it. First-admin bootstrap in production stays the
+attended `BootstrapService` flow.

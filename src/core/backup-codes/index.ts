@@ -17,6 +17,13 @@ export interface BackupCodesConfig {
   format: RegExp;
 }
 
+/**
+ * Recovery-code generator seam. `generateBackupCodes` (CSPRNG-backed) is the
+ * default everywhere; services that mint codes accept an override so a harness
+ * can supply a deterministic generator from the `./testing` subpath.
+ */
+export type BackupCodeGenerator = (count: number) => string[];
+
 export const DEFAULT_BACKUP_CODES_CONFIG: BackupCodesConfig = {
   count: 10,
   format: /^[A-Z0-9]{4}-[A-Z0-9]{4}$/,

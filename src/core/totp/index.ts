@@ -11,6 +11,7 @@ import type {
   TOTPConfig,
 } from "../../types/index.js";
 import { timingSafeVerify } from "../security/index.js";
+import type { Clock } from "../clock/index.js";
 import {
   configureAuthenticator,
   generateAuthenticatorToken,
@@ -34,6 +35,28 @@ const KEY_LENGTH = 32;
 // 32 Base32 chars = 160 bits = 20 bytes.
 const DUMMY_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
 
+/**
+ * TOTP verification seam. The default implementation is otplib (RFC 6238) and
+ * is what every production caller gets. `epochSeconds` is `undefined` unless
+ * the service was constructed with a `Clock`, in which case it carries that
+ * clock's time so verification and the replay step agree on "now".
+ */
+export interface TotpVerifier {
+  verify(secret: string, token: string, epochSeconds?: number): Promise<boolean>;
+  checkDelta(
+    secret: string,
+    token: string,
+    epochSeconds?: number,
+  ): number | null;
+}
+
+export const otplibTotpVerifier: TotpVerifier = {
+  verify: (secret, token, epochSeconds) =>
+    verifyAuthenticatorToken(secret, token, epochSeconds),
+  checkDelta: (secret, token, epochSeconds) =>
+    getAuthenticatorCheckDelta(secret, token, epochSeconds),
+};
+
 export interface TOTPServiceConfig {
   encryptionKey: string;
 
@@ -42,6 +65,12 @@ export interface TOTPServiceConfig {
   devMode?: boolean;
 
   testCode?: string;
+
+  /** Time source. Defaults to the system clock. */
+  clock?: Clock;
+
+  /** Verification implementation. Defaults to {@link otplibTotpVerifier}. */
+  verifier?: TotpVerifier;
 }
 
 export class TOTPService {
@@ -49,12 +78,29 @@ export class TOTPService {
   private issuer: string;
   private devMode: boolean;
   private testCode?: string;
+  private clock?: Clock;
+  private verifier: TotpVerifier;
 
   constructor(config: TOTPServiceConfig) {
     this.encryptionKey = config.encryptionKey;
     this.issuer = config.issuer;
     this.devMode = config.devMode || false;
     this.testCode = config.testCode;
+    this.clock = config.clock;
+    this.verifier = config.verifier ?? otplibTotpVerifier;
+  }
+
+  /** Milliseconds since the epoch from the injected clock, else the system. */
+  private nowMs(): number {
+    return this.clock ? this.clock.now() : Date.now();
+  }
+
+  /**
+   * Epoch seconds to hand to the verifier. `undefined` without an injected
+   * clock, so the default path lets otplib read system time as it always has.
+   */
+  private epochSeconds(): number | undefined {
+    return this.clock ? Math.floor(this.clock.now() / 1000) : undefined;
   }
 
   async generateSecret(handle: string, email?: string): Promise<TOTPSecret> {
@@ -68,7 +114,7 @@ export class TOTPService {
       email,
       secret,
       qrCodeUrl,
-      createdAt: new Date(),
+      createdAt: new Date(this.nowMs()),
     };
   }
 
@@ -123,11 +169,19 @@ export class TOTPService {
 
     return await timingSafeVerify(async () => {
       if (!secretOrNull) {
-        await verifyAuthenticatorToken(DUMMY_SECRET, cleanToken);
+        await this.verifier.verify(
+          DUMMY_SECRET,
+          cleanToken,
+          this.epochSeconds(),
+        );
         return false;
       }
 
-      return await verifyAuthenticatorToken(secretOrNull.secret, cleanToken);
+      return await this.verifier.verify(
+        secretOrNull.secret,
+        cleanToken,
+        this.epochSeconds(),
+      );
     }, 150);
   }
 
@@ -138,7 +192,7 @@ export class TOTPService {
    */
   private currentStep(): number {
     const stepSeconds = getAuthenticatorStep();
-    return Math.floor(Date.now() / 1000 / stepSeconds);
+    return Math.floor(this.nowMs() / 1000 / stepSeconds);
   }
 
   /**
@@ -179,11 +233,15 @@ export class TOTPService {
     const valid = await timingSafeVerify(async () => {
       if (!secretOrNull) {
         // Constant-time dummy path for unknown users.
-        getAuthenticatorCheckDelta(DUMMY_SECRET, cleanToken);
+        this.verifier.checkDelta(DUMMY_SECRET, cleanToken, this.epochSeconds());
         return false;
       }
 
-      const delta = getAuthenticatorCheckDelta(secretOrNull.secret, cleanToken);
+      const delta = this.verifier.checkDelta(
+        secretOrNull.secret,
+        cleanToken,
+        this.epochSeconds(),
+      );
       if (delta === null) {
         return false;
       }
@@ -203,7 +261,7 @@ export class TOTPService {
   }
 
   generateToken(secret: TOTPSecret): string {
-    return generateAuthenticatorToken(secret.secret);
+    return generateAuthenticatorToken(secret.secret, this.epochSeconds());
   }
 
   async generateQRCode(secret: TOTPSecret): Promise<string> {

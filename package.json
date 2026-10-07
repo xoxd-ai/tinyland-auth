@@ -43,6 +43,10 @@
     "./validation": {
       "types": "./dist/validation/index.d.ts",
       "import": "./dist/validation/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
     }
   },
   "files": [

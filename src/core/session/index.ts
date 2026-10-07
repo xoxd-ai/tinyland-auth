@@ -8,19 +8,32 @@
 
 import type { Session, SessionMetadata, SessionUser, AdminUser, SessionConfig } from '../../types/index.js';
 import type { SessionStorage } from '../../storage/interface.js';
+import type { Clock } from '../clock/index.js';
 
 export interface SessionManagerConfig {
   storage: SessionStorage;
   config: SessionConfig;
+
+  /**
+   * Time source for the manager's own expiry and renewal checks. Defaults to
+   * the system clock. Storage adapters keep their own expiry checks.
+   */
+  clock?: Clock;
 }
 
 export class SessionManager {
   private storage: SessionStorage;
   private config: SessionConfig;
+  private clock?: Clock;
 
-  constructor({ storage, config }: SessionManagerConfig) {
+  constructor({ storage, config, clock }: SessionManagerConfig) {
     this.storage = storage;
     this.config = config;
+    this.clock = clock;
+  }
+
+  private now(): Date {
+    return this.clock ? new Date(this.clock.now()) : new Date();
   }
 
   
@@ -48,7 +61,7 @@ export class SessionManager {
     if (!session) return null;
 
     
-    if (new Date(session.expires) < new Date()) {
+    if (new Date(session.expires) < this.now()) {
       await this.storage.deleteSession(sessionId);
       return null;
     }
@@ -94,7 +107,7 @@ export class SessionManager {
     const session = await this.getSession(sessionId);
     if (!session) return null;
 
-    const now = new Date();
+    const now = this.now();
     const newExpiry = new Date(now.getTime() + this.config.maxAge);
 
     return this.storage.updateSession(sessionId, {
@@ -136,7 +149,7 @@ export class SessionManager {
 
   shouldRenewSession(session: Session): boolean {
     const expires = new Date(session.expires);
-    const now = new Date();
+    const now = this.now();
     const remaining = expires.getTime() - now.getTime();
     return remaining < this.config.renewThreshold;
   }
@@ -146,7 +159,7 @@ export class SessionManager {
 
   isSessionValid(session: Session | null): session is Session {
     if (!session) return false;
-    return new Date(session.expires) > new Date();
+    return new Date(session.expires) > this.now();
   }
 }
 

@@ -17,7 +17,12 @@ import type {
   BootstrapStatus,
 } from '../../types/api.js';
 import { hashPassword } from '../../core/security/password.js';
-import { generateBackupCodes, createBackupCodeSet } from '../../core/backup-codes/index.js';
+import {
+  generateBackupCodes,
+  createBackupCodeSet,
+  type BackupCodeGenerator,
+} from '../../core/backup-codes/index.js';
+import type { Clock } from '../../core/clock/index.js';
 
 
 
@@ -39,6 +44,12 @@ export interface BootstrapServiceConfig {
   verifyTOTP: (secret: string, token: string) => boolean;
   
   encryptTOTPSecret: (handle: string, secret: string) => Promise<EncryptedTOTPSecret>;
+
+  /** Time source for the bootstrap-state TTL. Defaults to the system clock. */
+  clock?: Clock;
+
+  /** Recovery-code generator. Defaults to the CSPRNG-backed generateBackupCodes. */
+  generateBackupCodes?: BackupCodeGenerator;
 }
 
 
@@ -107,6 +118,10 @@ export class BootstrapService {
   
 
 
+  private nowMs(): number {
+    return this.config.clock ? this.config.clock.now() : Date.now();
+  }
+
   async getStatus(): Promise<BootstrapStatus> {
     const hasUsers = await this.config.storage.hasUsers();
 
@@ -157,7 +172,9 @@ export class BootstrapService {
     );
 
     
-    const backupCodes = generateBackupCodes(this.config.backupCodesCount);
+    const backupCodes = (this.config.generateBackupCodes ?? generateBackupCodes)(
+      this.config.backupCodesCount
+    );
 
     
     const state: BootstrapState = {
@@ -167,7 +184,7 @@ export class BootstrapService {
       email: request.email,
       totpSecret,
       backupCodes,
-      timestamp: Date.now(),
+      timestamp: this.nowMs(),
       step: 1,
     };
 
@@ -209,7 +226,7 @@ export class BootstrapService {
 
     
     const maxAge = 10 * 60 * 1000;
-    if (Date.now() - state.timestamp > maxAge) {
+    if (this.nowMs() - state.timestamp > maxAge) {
       return {
         success: false,
         error: 'Bootstrap session expired. Please start over.',
@@ -317,7 +334,7 @@ export class BootstrapService {
     if (!state || !state.timestamp) {
       return false;
     }
-    return Date.now() - state.timestamp < maxAgeMs;
+    return this.nowMs() - state.timestamp < maxAgeMs;
   }
 }
 

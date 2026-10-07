@@ -107,19 +107,32 @@ export function generateAuthenticatorUri(
   });
 }
 
-export function generateAuthenticatorToken(secret: string): string {
+/**
+ * Optional epoch (seconds) override. Omitted in production so otplib reads the
+ * system clock itself; supplied only when a caller injects a `Clock`.
+ */
+function epochOption(epochSeconds?: number): { epoch?: number } {
+  return epochSeconds === undefined ? {} : { epoch: epochSeconds };
+}
+
+export function generateAuthenticatorToken(
+  secret: string,
+  epochSeconds?: number,
+): string {
   assertSecretMeetsFloor(secret);
   return generateSync({
     strategy: "totp",
     secret,
     digits: config.digits as 6,
     period: config.step,
+    ...epochOption(epochSeconds),
   });
 }
 
 export async function verifyAuthenticatorToken(
   secret: string,
   token: string,
+  epochSeconds?: number,
 ): Promise<boolean> {
   assertSecretMeetsFloor(secret);
   const result = await verify({
@@ -129,6 +142,7 @@ export async function verifyAuthenticatorToken(
     digits: config.digits as 6,
     period: config.step,
     epochTolerance: epochTolerance(),
+    ...epochOption(epochSeconds),
   });
   return result.valid;
 }
@@ -150,6 +164,7 @@ export function getAuthenticatorStep(): number {
 export function getAuthenticatorCheckDelta(
   secret: string,
   token: string,
+  epochSeconds?: number,
 ): number | null {
   assertSecretMeetsFloor(secret);
   const result = verifySync({
@@ -159,6 +174,7 @@ export function getAuthenticatorCheckDelta(
     digits: config.digits as 6,
     period: config.step,
     epochTolerance: epochTolerance(),
+    ...epochOption(epochSeconds),
   });
   return result.valid ? result.delta : null;
 }

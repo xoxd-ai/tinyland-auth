@@ -1,5 +1,24 @@
 # @tummycrypt/tinyland-auth
 
+## Unreleased
+
+### Minor Changes
+
+- **Harness seams for agent-driven auth tests (RP2).** All additive; with no
+  seam supplied every service behaves exactly as in 0.7.1.
+  - `Clock` / `systemClock`: optional `clock` on `TOTPServiceConfig`,
+    `BootstrapServiceConfig` and `SessionManagerConfig`.
+  - `TotpVerifier` / `otplibTotpVerifier`: optional `verifier` on
+    `TOTPServiceConfig`. otplib remains the default.
+  - `BackupCodeGenerator`: optional `generateBackupCodes` on
+    `BootstrapServiceConfig`. The CSPRNG generator remains the default.
+  - New explicit subpath `@tummycrypt/tinyland-auth/testing`: `TestAdmissionIssuer`
+    and `createTestAdmissionIssuer`, `generateTestIdentity`, `createManualClock`
+    and `createDeterministicBackupCodeGenerator`. Admission fails closed: it
+    always refuses under `NODE_ENV=production` and otherwise requires
+    `TINYLAND_AUTH_TEST_ADMISSION=enabled`. `tests/testing-isolation.test.ts`
+    proves no other entry point reaches the module.
+
 ## 0.7.1
 
 ### Patch Changes
