@@ -48,8 +48,12 @@ const config: AuthenticatorConfig = {
  * whitespace are ignored; this is a floor estimate (5 bits per Base32 char).
  */
 function base32ByteLength(secret: string): number {
-  const clean = secret.replace(/=+$/g, "").replace(/\s/g, "");
-  return Math.floor((clean.length * 5) / 8);
+  // Count significant characters with a linear scan: no backtracking regex on
+  // caller-supplied input (CodeQL js/polynomial-redos).
+  const compact = secret.replace(/\s/g, "");
+  let end = compact.length;
+  while (end > 0 && compact.charCodeAt(end - 1) === 61 /* "=" */) end--;
+  return Math.floor((end * 5) / 8);
 }
 
 /**
