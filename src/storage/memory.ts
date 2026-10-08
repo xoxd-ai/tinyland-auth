@@ -8,6 +8,8 @@
 
 
 import { randomUUID } from 'crypto';
+import type { BoundedSessionPolicy } from '../types/config.js';
+import { assertBoundedSessionPolicy, boundedSessions } from './session-policy.js';
 import type {
   IStorageAdapter,
   AuditEventFilters,
@@ -168,6 +170,28 @@ export class MemoryStorageAdapter implements IStorageAdapter {
     user: Partial<AdminUser>,
     metadata?: SessionMetadata
   ): Promise<Session> {
+    const session = this.newSession(userId, user, metadata);
+    this.sessions.set(session.id, session);
+    return session;
+  }
+
+  async createSessionWithPolicy(
+    userId: string,
+    user: Partial<AdminUser>,
+    metadata: SessionMetadata | undefined,
+    policy: BoundedSessionPolicy,
+  ): Promise<Session> {
+    assertBoundedSessionPolicy(policy);
+    // No await between reading and replacing this adapter's session map.
+    const session = this.newSession(userId, user, metadata);
+    const next = boundedSessions([...this.sessions.values()], session, policy, Date.now());
+    this.sessions = new Map(next.map((item) => [item.id, item]));
+    return session;
+  }
+
+  private newSession(
+    userId: string, user: Partial<AdminUser>, metadata?: SessionMetadata,
+  ): Session {
     const id = randomUUID();
     const now = new Date();
     const expires = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); 
@@ -194,7 +218,6 @@ export class MemoryStorageAdapter implements IStorageAdapter {
       geoLocation: metadata?.geoLocation,
     };
 
-    this.sessions.set(id, session);
     return session;
   }
 

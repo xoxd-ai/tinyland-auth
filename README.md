@@ -4,25 +4,36 @@ Production-grade authentication system with TOTP, RBAC, and pluggable storage.
 
 ## Consumption And Release Authority
 
-The TypeScript import API stays under `@tummycrypt/tinyland-auth`. Tinyland's
-current release authority for this repo is Bazel-first:
+The TypeScript import API stays under `@tummycrypt/tinyland-auth`.
+Bzlmod plus the append-only Tinyland BCR is the sole first-party delivery authority
+([TIN-89](https://linear.app/tinyland/issue/TIN-89),
+[TIN-1629](https://linear.app/tinyland/issue/TIN-1629)). GitHub tags/releases bind
+source identity; neither npmjs nor GitHub Packages is a delivery or fallback lane.
+Historical provider artifacts and tags remain untouched.
 
-- CI validates the package through a repo-owned GloriousFlywheel runner lane and
-  `//:pkg //:test //:typecheck`.
-- npmjs publication is disabled in package workflows.
-- GitHub Packages mirror publication uses `@tinyland-inc/tinyland-auth`, because
-  GitHub Packages npm scopes are owner-bound.
-- Bazel consumers should depend through the Tinyland Bazel registry / BCR module
-  path instead of relying on a workspace-local package copy.
+Consumers pin `tummycrypt_tinyland_auth` in `MODULE.bazel` and link its `//:pkg`
+through Bazel's `npm_link_package`, not a first-party package-manager specifier
+or vendored copy. `npm_package`, `npm_translate_lock`, Node and locked pnpm
+dependencies are internal build/consumer mechanics, not provider publishers.
+The manifest's `private: true` and `npm_package(publishable = False)` prevent
+package-provider publication without changing TypeScript import paths.
 
-`pnpm add @tummycrypt/tinyland-auth` is valid only when the consumer is
-configured for a registry that intentionally serves the `@tummycrypt` package
-scope. It is not the current Tinyland publication authority for this repo.
+The legacy CI/publish pair and network `npx` Bazel fallback are retired in this
+source candidate. GF qualification remains **inert**: the caller stays under
+`docs/`, pending exact released-contract and admission review. No active remote
+checks are claimed. The finite graph retains `//:test`, `//:typecheck`,
+`//:release_metadata_test`, `//:invitation_authority_test`, `//:pkg`, and
+`//:package_artifact_test`; the last checks the real Bazel package and runs
+locked publint without npm/pnpm packing. See the
+[GF qualification boundary](docs/gf-v4-qualification-preparation.md) and
+[0.7.2 candidate disposition](docs/release-candidate-0.7.2.md).
 
 ## Exports
 
 - `.` — core auth: session management, password hashing, permissions, RBAC
 - `./sveltekit` — SvelteKit integration: hooks, guards, CSRF, session cookies
+- `./sveltekit/server` — server-only hooks, guards, cookies and ownership checks;
+  excludes client rune stores and can be imported by plain Node consumers
 - `./storage` — storage adapter interface + memory/file implementations
 - `./types` — TypeScript type definitions
 - `./totp` — TOTP generation and verification
@@ -56,6 +67,16 @@ Implement `IStorageAdapter` for your backend:
 
 - **Built-in**: `MemoryStorageAdapter`, `FileStorageAdapter`
 - **Separate packages**: `@tummycrypt/tinyland-auth-pg` (PostgreSQL), `@tummycrypt/tinyland-auth-redis` (Upstash Redis)
+
+### Ordinary onboarding enrollment (source candidate)
+
+The additive `./storage` export `FileTotpEnrollmentCoordinator` provides
+session-bound server-held pending TOTP material and committed/applied recovery
+receipts for the existing single-process databaseless deployment. Applications
+supply durable projections and route protected auth reads and mutations through
+the shared recovery gate. It does not adopt the held 0.8 bootstrap train or
+provide multi-replica guarantees. See the
+[API and integration contract](docs/file-totp-enrollment.md).
 
 ## Tinyland Databaseless MVP
 
@@ -125,7 +146,7 @@ rank; TIN-1606 precedent).
 
 | Role | Axis | Feature charter |
 | --- | --- | --- |
-| `super_admin` | governance-spine | System owner; every permission. |
+| `super_admin` | governance-spine | System owner; every administrative permission. Own publication/federation requires explicit grants. |
 | `admin` | governance-spine | General administration across domains. |
 | `moderator` | governance-spine | Fedi / community moderation. |
 | `editor` | specialist | Blog editorial. |

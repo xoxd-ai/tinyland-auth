@@ -48,6 +48,7 @@ export type {
   AuthConfig,
   TOTPConfig,
   SessionConfig,
+  BoundedSessionPolicy,
   PasswordConfig,
   RateLimitConfig,
   InvitationConfig,
@@ -58,6 +59,7 @@ export type {
 
 export {
   PERMISSIONS,
+  EXPLICIT_USER_PERMISSIONS,
   ROLE_PERMISSIONS,
   MEMBER_SELF_SERVICE_CORE,
   FEATURE_DOMAINS,
@@ -69,6 +71,8 @@ export {
 
 export type {
   AdminPermission,
+  OwnPermission,
+  Permission,
   ContentVisibility,
   FeatureDomain,
   RoleAxis,

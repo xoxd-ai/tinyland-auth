@@ -1,5 +1,59 @@
 # @tummycrypt/tinyland-auth
 
+## 1.1.0
+
+### Minor Changes
+
+Reconciles the reviewed `candidate/nonprod-auth-server-20260925-b5d2fca`
+lineage (the auth source the Mothership writer image already runs through
+`--override_module`) onto 1.0.0, so consumers can resolve it from the
+registry (TIN-3692 RU11). Additive for 1.0.0 consumers; no 1.0.0 export is
+removed or renamed.
+
+- **`./sveltekit/server`**: a rune-free server entry (`createCSRFHandle`,
+  `requireAuth`, `requireContentEditPermission`, ...) that imports in plain
+  Node. `//:server_entry_artifact_test` imports it from the Bazel `//:pkg`.
+- **`./storage` durable coordinators**: `FileBootstrapCoordinator` and
+  `BootstrapJournalError`, `FileTotpEnrollmentCoordinator` (ordinary and
+  bound self-enrollment v2), `FileTotpRetirementCoordinator` and
+  `TotpRetirementError`, `FileActionStepUpStore`, plus their types.
+- **Bounded sessions**: `SessionConfig.sessionStrategy = 'bounded'` with
+  `BoundedSessionPolicy` and `createSessionWithPolicy` on the file and memory
+  adapters, plus the `deleteTOTPSecretExpected` / `deleteBackupCodesExpected`
+  compare-and-delete helpers.
+- **Permissions**: explicit-grant-only `content.own.publish`
+  (`CONTENT_OWN_PUBLISH`) and `federation.own.deliver`
+  (`FEDERATION_OWN_DELIVER`). No role grants them by default, including
+  `super_admin`; existing permissions are unchanged.
+- **File adapter durability**: JSON writes are acknowledged only after file
+  sync, atomic rename and directory sync. Unreadable, malformed or wrongly
+  bound stored TOTP and backup-code credentials now fail closed; only a
+  missing file counts as an absent credential. Filesystems must support
+  acknowledged file and directory sync.
+
+### RS6 reconciliation
+
+- The candidate's public `now` options on `FileBootstrapConfig`,
+  `FileTotpEnrollmentConfig`, `FileTotpRetirementConfig` and
+  `FileActionStepUpConfig` are **not** released. The coordinators read the
+  internal seam clock (`src/core/seams`), which only the `NODE_ENV=test`
+  testing build can install, exactly like 1.0.0's `TOTPService` and
+  `SessionManager`. Production code always uses system time.
+- The coordinators' `totp` option is the application's own `TOTPService`
+  (or a wrapper that delegates to it, for example to gate verification on
+  write activation). It carries the encryption custody the application
+  already holds; it is not a fixed-code bypass, and 1.0.0's
+  `TOTPServiceConfig` keeps no verifier option.
+
+### Release surface
+
+- The manifest is `private: true` and `npm_package(publishable = False)`;
+  `prepublishOnly` is gone (RU6/RU8). Delivery is the Bzlmod registry entry
+  only. `ci.yml` and the validation-only `publish.yml` from 1.0.0 stay.
+- The candidate's inert GF v4 lane file and its workflow-absence contract test
+  are not carried over: 1.0.0 already registers the three qualification
+  targets (#61). The inert plan documents stay for reference.
+
 ## 1.0.0
 
 ### Major Changes

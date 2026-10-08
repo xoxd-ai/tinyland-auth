@@ -12,17 +12,21 @@ and is covered by
 
 ## Bazel And Package Proof
 
-Package adoption is proved through the Bazel package lane, not by treating a
-local pnpm workspace copy as release truth. The CI and publish workflows run on
-the repo-owned GloriousFlywheel runner lane and validate
-`//:pkg //:test //:typecheck`; `//:test` includes the MVP example plus the
-databaseless auth tests.
+Package adoption requires qualified remote GF evidence for the exact Bazel
+graph, not a local pnpm workspace copy or an ARC runner label.
+`//:test` includes the MVP example plus the databaseless auth tests;
+`//:typecheck`, `//:release_metadata_test`, `//:invitation_authority_test` and
+`//:package_artifact_test` preserve compiler, metadata, generated-declaration
+and actual `//:pkg` validation. The caller is currently inert, with no active
+replacement for the retired legacy CI/publish pair; see
+[GF preparation](gf-v4-qualification-preparation.md).
 
-The runtime TypeScript package remains `@tummycrypt/tinyland-auth`. npmjs
-publication is disabled for this repo's workflows; the GitHub Packages mirror is
-`@tinyland-inc/tinyland-auth` because GitHub Packages scopes are owner-bound.
-Bazel consumers should use the Tinyland Bazel registry / BCR module path that
-corresponds to the released package artifact.
+The runtime TypeScript import remains `@tummycrypt/tinyland-auth`.
+Bzlmod plus the append-only Tinyland BCR is the sole first-party delivery authority;
+neither npmjs nor GitHub Packages is a delivery or fallback lane. GitHub
+tags/releases identify source, while consumers resolve the module and its
+`//:pkg` through the reviewed BCR graph. Internal JS packaging and locked
+third-party dependencies are not provider publication.
 
 ## Authority Planes
 

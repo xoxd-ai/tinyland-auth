@@ -20,13 +20,21 @@ import {
   hasAnyPermission,
   hasAllPermissions,
   getRolePermissions,
+  getUserPermissions,
+  requirePermission,
+  requireAnyPermission,
+  requireAllPermissions,
+  isValidPermission,
+  getPermissionDisplayName,
   canManageRole,
+  canCreatePublicContent,
+  canDeliverFederation,
   canViewContent,
   filterContentByVisibility,
   getAllowedVisibilityOptions,
   isMemberRole,
 } from '../src/core/permissions/index.js';
-import { PERMISSIONS, ROLE_PERMISSIONS } from '../src/types/permissions.js';
+import { EXPLICIT_USER_PERMISSIONS, PERMISSIONS, ROLE_PERMISSIONS } from '../src/types/permissions.js';
 
 
 const createTestUser = (role: string, id = 'user-1'): AdminUser => ({
@@ -126,7 +134,7 @@ describe('Permission Functions', () => {
   });
 
   describe('hasPermission', () => {
-    it('should return true for super_admin with any permission', () => {
+    it('should return true for super_admin with administrative permissions', () => {
       expect(hasPermission(superAdmin, PERMISSIONS.ADMIN_ACCESS)).toBe(true);
       expect(hasPermission(superAdmin, PERMISSIONS.ADMIN_USERS_MANAGE)).toBe(true);
       expect(hasPermission(superAdmin, PERMISSIONS.ADMIN_SECURITY_MANAGE)).toBe(true);
@@ -153,6 +161,77 @@ describe('Permission Functions', () => {
     });
   });
 
+  describe('explicit own-scope permissions', () => {
+    it('registers exact IDs and descriptive names', () => {
+      expect(EXPLICIT_USER_PERMISSIONS).toEqual([
+        'content.own.publish',
+        'federation.own.deliver',
+      ]);
+      expect(Object.isFrozen(EXPLICIT_USER_PERMISSIONS)).toBe(true);
+      for (const permission of EXPLICIT_USER_PERMISSIONS) {
+        expect(isValidPermission(permission)).toBe(true);
+      }
+      expect(isValidPermission('content.own.manage')).toBe(false);
+      expect(getPermissionDisplayName(PERMISSIONS.CONTENT_OWN_PUBLISH)).toBe('Publish Own Public Content');
+      expect(getPermissionDisplayName(PERMISSIONS.FEDERATION_OWN_DELIVER)).toBe('Deliver Own Federation Content');
+    });
+
+    it.each(ADMIN_ROLES)('%s receives neither own-scope permission by default', role => {
+      const user = createTestUser(role);
+      for (const permission of EXPLICIT_USER_PERMISSIONS) {
+        expect(getRolePermissions(role)).not.toContain(permission);
+        expect(getUserPermissions(user)).not.toContain(permission);
+        expect(hasPermission(user, permission)).toBe(false);
+        expect(() => requirePermission(user, permission)).toThrow('Permission denied');
+      }
+      expect(hasAnyPermission(user, [...EXPLICIT_USER_PERMISSIONS])).toBe(false);
+      expect(hasAllPermissions(user, [...EXPLICIT_USER_PERMISSIONS])).toBe(false);
+      expect(() => requireAnyPermission(user, [...EXPLICIT_USER_PERMISSIONS])).toThrow('Permission denied');
+      expect(() => requireAllPermissions(user, [...EXPLICIT_USER_PERMISSIONS])).toThrow('Permission denied');
+    });
+
+    it.each(ADMIN_ROLES)('%s needs a separate explicit grant for each own-scope permission', role => {
+      for (const granted of EXPLICIT_USER_PERMISSIONS) {
+        const user = { ...createTestUser(role), permissions: [granted] };
+        for (const permission of EXPLICIT_USER_PERMISSIONS) {
+          expect(hasPermission(user, permission)).toBe(permission === granted);
+          expect(getUserPermissions(user).includes(permission)).toBe(permission === granted);
+        }
+        expect(hasAnyPermission(user, [...EXPLICIT_USER_PERMISSIONS])).toBe(true);
+        expect(hasAllPermissions(user, [...EXPLICIT_USER_PERMISSIONS])).toBe(false);
+        expect(() => requirePermission(user, granted)).not.toThrow();
+        expect(() => requireAnyPermission(user, [...EXPLICIT_USER_PERMISSIONS])).not.toThrow();
+        expect(() => requireAllPermissions(user, [...EXPLICIT_USER_PERMISSIONS])).toThrow('Permission denied');
+
+        user.permissions = [];
+        expect(hasPermission(user, granted)).toBe(false);
+        expect(getUserPermissions(user)).not.toContain(granted);
+      }
+    });
+
+    it('does not turn own-scope grants into administrative or other-user authority', () => {
+      const user = { ...member, permissions: [...EXPLICIT_USER_PERMISSIONS] };
+      expect(hasAllPermissions(user, [...EXPLICIT_USER_PERMISSIONS])).toBe(true);
+      expect(() => requireAllPermissions(user, [...EXPLICIT_USER_PERMISSIONS])).not.toThrow();
+      expect(user.role).toBe('member');
+      for (const permission of [
+        PERMISSIONS.ADMIN_CONTENT_PUBLISH,
+        PERMISSIONS.ADMIN_CONTENT_MANAGE,
+        PERMISSIONS.ADMIN_CONTENT_MODERATE,
+        PERMISSIONS.ADMIN_CONTENT_DELETE,
+        PERMISSIONS.ADMIN_FEDERATION_VIEW,
+        PERMISSIONS.ADMIN_FEDERATION_DELIVER,
+        PERMISSIONS.ADMIN_USERS_MANAGE,
+        PERMISSIONS.ADMIN_USERS_DELETE,
+      ]) {
+        expect(hasPermission(user, permission)).toBe(false);
+      }
+      expect(canCreatePublicContent(user.role)).toBe(false);
+      expect(canDeliverFederation(user.role)).toBe(false);
+      expect(getAllowedVisibilityOptions(user.role)).toEqual(getAllowedVisibilityOptions(member.role));
+    });
+  });
+
   describe('hasAnyPermission', () => {
     it('should return true if user has at least one permission', () => {
       expect(hasAnyPermission(editor, [PERMISSIONS.ADMIN_CONTENT_MANAGE, PERMISSIONS.ADMIN_USERS_MANAGE])).toBe(true);
@@ -175,7 +254,7 @@ describe('Permission Functions', () => {
   });
 
   describe('getRolePermissions', () => {
-    it('should return all permissions for super_admin', () => {
+    it('should return all administrative permissions for super_admin', () => {
       const perms = getRolePermissions('super_admin');
       expect(perms).toContain(PERMISSIONS.ADMIN_SECURITY_MANAGE);
       expect(perms).toContain(PERMISSIONS.ADMIN_USERS_MANAGE);
