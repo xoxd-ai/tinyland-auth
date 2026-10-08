@@ -1,5 +1,105 @@
 # @tummycrypt/tinyland-auth
 
+## 1.0.0
+
+### Major Changes
+
+- **BREAKING (RS6, TIN-5766): the production entry has no TOTP bypass, no
+  caller-injected TOTP verifier and no public test-seam option.** Migration: [docs/migration-1.0.md](docs/migration-1.0.md).
+
+  Removed (breaking):
+
+  1. `TOTPServiceConfig.devMode` (exported from `.` and `./totp`).
+  2. `TOTPServiceConfig.testCode` (exported from `.` and `./totp`).
+  3. The fixed-code shortcut in `TOTPService.verifyToken` and
+     `verifyTokenWithStep`, and the private `devMode` / `testCode` fields.
+  4. `createTOTPService` no longer passes `devMode`.
+  5. `TOTPConfig.devMode` (`.` and `./types`) and
+     `DEFAULT_AUTH_CONFIG.totp.devMode`. Without the bypass the setting did
+     nothing.
+  6. The unreleased seams from the 1.0 development line (never published):
+     `TOTPServiceConfig.verifier`, `TotpVerifier`, `otplibTotpVerifier`,
+     `Clock`, `systemClock`, `BackupCodeGenerator`, and the `clock` /
+     `generateBackupCodes` options on `TOTPServiceConfig`,
+     `SessionManagerConfig` and `BootstrapServiceConfig`.
+
+  7. The mTLS development auto-pass (RP2). `requireMTLS`,
+     `extractCertificateFromEvent` and `getCertificateFingerprintFromEvent`
+     (`./sveltekit`) no longer admit a request without a client certificate
+     when `NODE_ENV` is unset or `development`, or when the request host is
+     `localhost`, `127.0.0.1` or `*.local`. Under adapter-node without
+     `ORIGIN` that host comes from the client's `Host` header, so 0.7.x
+     admitted any request that sent `Host: localhost`, and every request when
+     `NODE_ENV` was unset. `MTLSOptions.isDevelopment` (`.`,
+     `./validation` and `./sveltekit`) and the `dev-mode-no-cert` certificate are gone:
+     `extractCertificate` and `getCertificateFingerprint` always read the
+     forwarded certificate headers. `requireMTLS` takes an optional
+     `MTLSOptions` (`validFingerprints`).
+  8. `AuthConfig.isDevelopment` and `DEFAULT_AUTH_CONFIG.isDevelopment`. No
+     code read it.
+  9. `BootstrapServiceConfig.verifyTOTP` and
+     `BootstrapServiceConfig.generateTOTPSecret` (RP2). In 0.7.x
+     `complete()` trusted the caller's verifier alone, so
+     `verifyTOTP: () => true` created the first `super_admin` with any code.
+     `initiate()` now generates the secret from the CSPRNG and `complete()`
+     verifies the code itself with otplib (same step, window and digits as
+     `TOTPService`). It rejects non-numeric codes and malformed or
+     below-floor secrets, and refuses once any user exists, so a replayed
+     state, or a second state completed after the first admin exists, cannot
+     add another `super_admin`. The check is not atomic against two racing
+     completes.
+
+  A legacy `devMode` / `testCode` / `isDevelopment` / `verifyTOTP` /
+  `generateTOTPSecret` key passed at runtime is ignored. It never accepts a
+  fixed code, pins a secret or skips a certificate check.
+
+- **Test harness behind a hard gate (RS5).** `src/testing` holds
+  `createTestAdmissionIssuer`, `generateTestIdentity`, `createManualClock`,
+  `createDeterministicBackupCodeGenerator` and the
+  `createTestTOTPService` / `createTestSessionManager` /
+  `createTestBootstrapService` seam factories. It is excluded from the
+  production build, `//:pkg` and the npm tarball. It is not exported. It
+  throws on load unless `process.env.NODE_ENV === 'test'`, so it fails closed
+  when `NODE_ENV` is unset. It never reads a caller-supplied environment:
+  `TestAdmissionIssuerConfig.env` and the `env` parameters of the gate
+  functions are gone. Admission also requires
+  `TINYLAND_AUTH_TEST_ADMISSION=enabled`.
+
+- **Production-exclusion proof.** `scripts/check-production-artifact.mjs`
+  checks a built package and a production Vite bundle of every public entry
+  for testing symbols, the unique testing sentinel, removed bypass names
+  (including `isDevelopment`, `detectDevelopment`, `dev-mode-no-cert` and
+  `verifyTOTP`) and
+  the internal seam writer, and confirms that `./testing` does not resolve. It
+  runs on the `pnpm pack` tarball (`pnpm check:production-artifact`, in CI) and
+  on Bazel `//:pkg` (`//:production_artifact_test`).
+  `tests/production-artifact.test.ts` proves the check catches injected leaks.
+
+### Patch Changes
+
+- `build` removes `dist/` before compiling, and `prepublishOnly` also runs
+  `check:production-artifact`, so a manual publish from a tree with a stale
+  `dist/` cannot ship it.
+- Docs: the mTLS helpers trust the forwarded certificate headers. Without
+  `validFingerprints`, a forwarded subject with the verify header absent or
+  `NONE` is admitted, so the edge proxy must strip client-supplied copies.
+  This is unchanged from 0.7.x and is now stated on `MTLSOptions`,
+  `requireMTLS` and in the README.
+
+- `fix(sveltekit)`: `DEFAULT_COOKIE_CONFIG.secure` is now `true` unless
+  `NODE_ENV` is exactly `development` or `test`. 0.7.x set it only when
+  `NODE_ENV` was `production`, so session cookies lost `Secure` when
+  `NODE_ENV` was unset.
+- `fix(security)`: `generateSecurePassword` imports `randomInt` from `crypto`
+  instead of calling CommonJS `require` inside ESM, which threw
+  `ReferenceError` in plain Node. It also no longer has modulo bias.
+- The internal seam writer (`dist/core/seams`, not exported) refuses unless
+  `NODE_ENV` is exactly `test`, so a file-URL import cannot install a clock
+  in production.
+- `fix(totp)`: `base32ByteLength` counts padding with a linear scan instead of
+  a backtracking regex (CodeQL `js/polynomial-redos`). The 128-bit floor is
+  unchanged for well-formed secrets.
+
 ## 0.7.1
 
 ### Patch Changes

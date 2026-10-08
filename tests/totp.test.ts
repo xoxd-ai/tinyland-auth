@@ -6,7 +6,8 @@
 
 
 import { describe, it, expect } from 'vitest';
-import { TOTPService } from '../src/core/totp/index.js';
+import { TOTPService, createTOTPService } from '../src/core/totp/index.js';
+import { DEFAULT_AUTH_CONFIG } from '../src/types/config.js';
 import type { TOTPSecret, EncryptedData } from '../src/types/auth.js';
 
 
@@ -16,7 +17,6 @@ function createTestService(overrides: Partial<ConstructorParameters<typeof TOTPS
   return new TOTPService({
     encryptionKey: TEST_ENCRYPTION_KEY,
     issuer: 'Test App',
-    devMode: false,
     ...overrides,
   });
 }
@@ -178,29 +178,33 @@ describe('TOTPService', () => {
       expect(result).toBe(true);
     });
 
-    it('should accept test code in dev mode', async () => {
-      const service = createTestService({
+    it('has no fixed-code bypass: legacy devMode/testCode options are ignored (RS6)', async () => {
+      const service = new TOTPService({
+        encryptionKey: TEST_ENCRYPTION_KEY,
+        issuer: 'Test App',
+        // @ts-expect-error devMode and testCode were removed from TOTPServiceConfig in 1.0.0
         devMode: true,
         testCode: '999999',
       });
-
       const secret = await service.generateSecret('testuser', 'test@example.com');
-      const result = await service.verifyToken(secret, '999999');
-      expect(result).toBe(true);
+
+      const fixed = service.generateToken(secret) === '999999' ? '999998' : '999999';
+      expect(await service.verifyToken(secret, fixed)).toBe(false);
+      expect(await service.verifyToken(null, fixed)).toBe(false);
+      expect(await service.verifyTokenWithStep(secret, fixed)).toEqual({ valid: false });
+      expect(Object.keys(service)).not.toContain('devMode');
+      expect(Object.keys(service)).not.toContain('testCode');
     });
 
-    it('should not accept test code when not in dev mode', async () => {
-      const service = createTestService({
-        devMode: false,
-        testCode: '999999',
-      });
-
-      const secret = await service.generateSecret('testuser', 'test@example.com');
-      const result = await service.verifyToken(secret, '999999');
-      
-      
-      
-      expect(typeof result).toBe('boolean');
+    it('createTOTPService ignores a legacy devMode key on the config', async () => {
+      const service = createTOTPService({
+        ...DEFAULT_AUTH_CONFIG.totp,
+        encryptionKey: TEST_ENCRYPTION_KEY,
+        devMode: true,
+      } as typeof DEFAULT_AUTH_CONFIG.totp);
+      const secret = await service.generateSecret('testuser');
+      expect(await service.verifyToken(secret, '999999')).toBe(service.generateToken(secret) === '999999');
+      expect('devMode' in DEFAULT_AUTH_CONFIG.totp).toBe(false);
     });
   });
 

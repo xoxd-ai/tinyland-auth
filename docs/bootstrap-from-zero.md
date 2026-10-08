@@ -447,13 +447,14 @@ if (ok) {
 If you prefer a guided `/bootstrap` route over a seed script, the package ships
 `BootstrapService` (`createBootstrapService`). It enforces the "no users yet"
 precondition, validates the handle, and its `complete()` step hardcodes
-`role: 'super_admin'`, so it is purpose-built for the first admin. Its config
-takes callbacks for the TOTP primitives:
+`role: 'super_admin'`, so it is purpose-built for the first admin. Since
+1.0.0 it generates the TOTP secret and verifies the code itself; there is no
+verifier or secret-generator callback (RS6/RP2). The config takes only
+presentation and storage callbacks:
 
 ```ts
 import { createBootstrapService } from '@tummycrypt/tinyland-auth';
 import {
-  generateTOTPSecret,
   generateTOTPUri,
   generateTOTPQRCode,
 } from '@tummycrypt/tinyland-auth/totp';
@@ -465,7 +466,6 @@ const bootstrap = createBootstrapService({
   appName: 'My App',
   bcryptRounds: 12,
   backupCodesCount: 10,
-  generateTOTPSecret,            // () => string (base32 secret)
   generateQRCode: (handle, secret, issuer) =>
     generateTOTPQRCode(generateTOTPUri(secret, issuer, handle)), // () => Promise<data-url>
   encryptTOTPSecret: async (handle, secret) => {
@@ -482,17 +482,6 @@ const bootstrap = createBootstrapService({
       version: 1,
     };
   },
-  // verifyTOTP: (secret: string, token: string) => boolean
-  // ILLUSTRATIVE seam: the package does not export a synchronous string-based
-  // TOTP verifier, and this callback must be synchronous (complete() calls it
-  // without awaiting). Supply one using otplib, which tinyland-auth itself
-  // depends on internally, configured to match the package (step 30, window 1,
-  // SHA1, 6 digits). If you cannot add that verifier, prefer the seed script in
-  // section 6, which needs no in-app code round-trip.
-  verifyTOTP: (secret, token) => {
-    // e.g. otplib authenticator.check(token, secret) with matching options
-    throw new Error('supply a synchronous TOTP verifier');
-  },
 });
 ```
 
@@ -500,7 +489,8 @@ Flow: `getStatus()` tells you whether bootstrap is still allowed
 (`needsBootstrap`); `initiate({ handle, password, displayName, email? })` returns
 `{ state, qrCodeUrl, backupCodes }` (you carry `state` from `initiate` into
 `complete` yourself); `complete(state, { handle, totpCode })` verifies the
-code, writes the `super_admin`, stores backup codes, logs a
+code against the state's secret (otplib, same settings as `TOTPService`),
+refuses if any user already exists, writes the `super_admin`, stores backup codes, logs a
 `BOOTSTRAP_COMPLETED` audit event, and returns the safe user. The state expires
 10 minutes after `initiate`.
 
@@ -532,6 +522,8 @@ At that point an unauthenticated request to any non-public route redirects to
 ## Provenance (0.7.1 source)
 
 Every API named above is a public export of `@tummycrypt/tinyland-auth@0.7.1`.
+Section 9 describes the 1.0.0 `BootstrapServiceConfig`, which drops the 0.7.1
+`generateTOTPSecret` and `verifyTOTP` callbacks.
 Verified against the release source:
 
 - Root exports (`hashPassword`, `verifyPassword`, `validatePassword`,

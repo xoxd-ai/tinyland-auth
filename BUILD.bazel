@@ -9,6 +9,9 @@ package(default_visibility = ["//visibility:public"])
 
 npm_link_all_packages(name = "node_modules")
 
+# RS5: the production library never compiles src/testing. The testing entry is
+# built only by tsconfig.testing.json (dist-testing/), is not exported, and is
+# absent from :pkg; //:production_artifact_test proves it on the real artifact.
 ts_project(
     name = "tinyland_auth",
     srcs = glob(
@@ -16,6 +19,7 @@ ts_project(
         exclude = [
             "src/**/*.test.ts",
             "src/**/*.spec.ts",
+            "src/testing/**",
         ],
     ) + ["package.json"],
     declaration = True,
@@ -58,15 +62,22 @@ vitest_bin.vitest_test(
         "MODULE.bazel",
         "README.md",
         "scripts/check-invitation-authority.mjs",
+        "scripts/check-production-artifact.mjs",
         "scripts/check-release-metadata.mjs",
         "scripts/ci-bazel-test.sh",
+        "scripts/pack-and-check-production-artifact.mjs",
+        ".gitignore",
         ":node_modules",
         ":node_modules/vitest",
         "package.json",
         "tsconfig.json",
+        "tsconfig.testing.json",
         "vitest.config.ts",
     ],
     log_level = "info",
+    # tests/production-artifact.test.ts compiles both builds and runs several
+    # production Vite bundles.
+    timeout = "long",
 )
 
 ts_project(
@@ -106,7 +117,21 @@ npm_package(
         ":package.json",
     ],
     package = "@tummycrypt/tinyland-auth",
-    version = "0.7.1",
+    version = "1.0.0",
+)
+
+# RS5 / RS6 production-exclusion proof on the artifact that is published: no
+# testing path, testing symbol, sentinel or removed bypass name in :pkg or in a
+# production Vite bundle of every public entry, and ./testing unresolvable.
+js_test(
+    name = "production_artifact_test",
+    args = ["$(rootpath :pkg)"],
+    data = [
+        ":node_modules/vite",
+        ":pkg",
+    ],
+    entry_point = "scripts/check-production-artifact.mjs",
+    timeout = "moderate",
 )
 
 # TIN-4435/AP3: the three qualification targets the tinyland.dev candidate-image
@@ -138,10 +163,12 @@ js_test(
         "scripts/check-invitation-authority.mjs",
         "src/index.ts",
         ":node_modules/typescript",
-        ":tinyland_auth_types",
+        ":tinyland_auth",
     ],
     chdir = package_name(),
     entry_point = "scripts/check-invitation-authority.mjs",
+    # The guard reads dist/index.d.ts; .d.ts outputs are not runfiles by default.
+    include_types = True,
 )
 
 publint_bin.publint_test(

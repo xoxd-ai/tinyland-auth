@@ -8,6 +8,7 @@
 
 
 import * as bcrypt from 'bcryptjs';
+import { randomInt } from 'crypto';
 
 
 
@@ -146,12 +147,10 @@ export function generateSecurePassword(
     charset = 'abcdefghijklmnopqrstuvwxyz0123456789';
   }
 
-  const { randomBytes } = require('crypto');
-  const bytes = randomBytes(length);
   let password = '';
 
   for (let i = 0; i < length; i++) {
-    password += charset[bytes[i] % charset.length];
+    password += charset[randomInt(charset.length)];
   }
 
   return password;

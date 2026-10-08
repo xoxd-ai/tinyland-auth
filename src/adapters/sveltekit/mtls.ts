@@ -43,27 +43,11 @@ function extractHeadersFromEvent(event: RequestEvent): CertificateHeaders {
 
 
 
-function detectDevelopment(event: RequestEvent): boolean {
-  return (
-    process.env.NODE_ENV === 'development' ||
-    !process.env.NODE_ENV ||
-    event.url.hostname === 'localhost' ||
-    event.url.hostname === '127.0.0.1' ||
-    event.url.hostname.endsWith('.local')
-  );
-}
-
-
-
-
 export function extractCertificateFromEvent(
   event: RequestEvent,
-  options?: Partial<MTLSOptions>
+  options?: MTLSOptions
 ): CertificateInfo {
-  const headers = extractHeadersFromEvent(event);
-  const isDevelopment = options?.isDevelopment ?? detectDevelopment(event);
-  return coreExtractCertificate(headers, {
-    isDevelopment,
+  return coreExtractCertificate(extractHeadersFromEvent(event), {
     validFingerprints: options?.validFingerprints,
   });
 }
@@ -73,8 +57,19 @@ export function extractCertificateFromEvent(
 
 
 
-export function requireMTLS(event: RequestEvent): boolean {
-  const certInfo = extractCertificateFromEvent(event);
+/**
+ * Admit the request only when its forwarded certificate headers pass
+ * {@link extractCertificateFromEvent}. There is no host, NODE_ENV or
+ * development short-circuit (1.0.0, RP2).
+ *
+ * Trust model: these checks read headers set by the TLS-terminating proxy and
+ * trust them. The proxy must overwrite or strip every client-supplied copy of
+ * the certificate headers. Without `validFingerprints`, a forwarded subject
+ * with the verify header absent or `NONE` is admitted, so set
+ * `validFingerprints` wherever the edge is not guaranteed to strip them.
+ */
+export function requireMTLS(event: RequestEvent, options?: MTLSOptions): boolean {
+  const certInfo = extractCertificateFromEvent(event, options);
 
   if (!certInfo.isValid) {
     return false;
@@ -89,12 +84,9 @@ export function requireMTLS(event: RequestEvent): boolean {
 
 export function getCertificateFingerprintFromEvent(
   event: RequestEvent,
-  options?: Partial<MTLSOptions>
+  options?: MTLSOptions
 ): string | null {
-  const headers = extractHeadersFromEvent(event);
-  const isDevelopment = options?.isDevelopment ?? detectDevelopment(event);
-  return coreGetCertificateFingerprint(headers, {
-    isDevelopment,
+  return coreGetCertificateFingerprint(extractHeadersFromEvent(event), {
     validFingerprints: options?.validFingerprints,
   });
 }

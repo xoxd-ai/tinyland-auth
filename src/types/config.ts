@@ -9,8 +9,6 @@ export interface AuthConfig {
   appName: string;
   
   appUrl: string;
-  
-  isDevelopment: boolean;
 
   
   totp: TOTPConfig;
@@ -35,8 +33,6 @@ export interface TOTPConfig {
   issuer: string;
   
   encryptionKey: string;
-  
-  devMode: boolean;
   
   digits: number;
   
@@ -141,13 +137,11 @@ export interface SecurityConfig {
 export const DEFAULT_AUTH_CONFIG: AuthConfig = {
   appName: 'Tinyland.dev',
   appUrl: 'http://localhost:9080',
-  isDevelopment: process.env.NODE_ENV === 'development',
 
   totp: {
     enabled: true,
     issuer: 'Tinyland.dev',
     encryptionKey: '',
-    devMode: false,
     digits: 6,
     period: 30,
     algorithm: 'SHA1',

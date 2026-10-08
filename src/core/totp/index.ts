@@ -11,6 +11,7 @@ import type {
   TOTPConfig,
 } from "../../types/index.js";
 import { timingSafeVerify } from "../security/index.js";
+import { epochSecondsFor, nowMsFor } from "../seams/index.js";
 import {
   configureAuthenticator,
   generateAuthenticatorToken,
@@ -38,23 +39,23 @@ export interface TOTPServiceConfig {
   encryptionKey: string;
 
   issuer: string;
-
-  devMode?: boolean;
-
-  testCode?: string;
 }
 
+/**
+ * TOTP enrolment and verification.
+ *
+ * 1.0.0 (RS6): there is no code-accepting shortcut and no injectable verifier.
+ * Every token is checked by otplib (RFC 6238) against the stored secret. Time
+ * comes from the system clock; a test clock can be attached only through the
+ * gated `./testing` build, never through this config.
+ */
 export class TOTPService {
   private encryptionKey: string;
   private issuer: string;
-  private devMode: boolean;
-  private testCode?: string;
 
   constructor(config: TOTPServiceConfig) {
     this.encryptionKey = config.encryptionKey;
     this.issuer = config.issuer;
-    this.devMode = config.devMode || false;
-    this.testCode = config.testCode;
   }
 
   async generateSecret(handle: string, email?: string): Promise<TOTPSecret> {
@@ -68,7 +69,7 @@ export class TOTPService {
       email,
       secret,
       qrCodeUrl,
-      createdAt: new Date(),
+      createdAt: new Date(nowMsFor(this)),
     };
   }
 
@@ -116,18 +117,19 @@ export class TOTPService {
     token: string,
   ): Promise<boolean> {
     const cleanToken = token.replace(/\s/g, "");
-
-    if (this.devMode && this.testCode && cleanToken === this.testCode) {
-      return true;
-    }
+    const epochSeconds = epochSecondsFor(this);
 
     return await timingSafeVerify(async () => {
       if (!secretOrNull) {
-        await verifyAuthenticatorToken(DUMMY_SECRET, cleanToken);
+        await verifyAuthenticatorToken(DUMMY_SECRET, cleanToken, epochSeconds);
         return false;
       }
 
-      return await verifyAuthenticatorToken(secretOrNull.secret, cleanToken);
+      return await verifyAuthenticatorToken(
+        secretOrNull.secret,
+        cleanToken,
+        epochSeconds,
+      );
     }, 150);
   }
 
@@ -138,7 +140,7 @@ export class TOTPService {
    */
   private currentStep(): number {
     const stepSeconds = getAuthenticatorStep();
-    return Math.floor(Date.now() / 1000 / stepSeconds);
+    return Math.floor(nowMsFor(this) / 1000 / stepSeconds);
   }
 
   /**
@@ -165,25 +167,22 @@ export class TOTPService {
     lastUsedStep?: number,
   ): Promise<{ valid: boolean; step?: number }> {
     const cleanToken = token.replace(/\s/g, "");
-
-    if (this.devMode && this.testCode && cleanToken === this.testCode) {
-      const step = this.currentStep();
-      if (lastUsedStep !== undefined && step <= lastUsedStep) {
-        return { valid: false };
-      }
-      return { valid: true, step };
-    }
+    const epochSeconds = epochSecondsFor(this);
 
     let matchedStep: number | undefined;
 
     const valid = await timingSafeVerify(async () => {
       if (!secretOrNull) {
         // Constant-time dummy path for unknown users.
-        getAuthenticatorCheckDelta(DUMMY_SECRET, cleanToken);
+        getAuthenticatorCheckDelta(DUMMY_SECRET, cleanToken, epochSeconds);
         return false;
       }
 
-      const delta = getAuthenticatorCheckDelta(secretOrNull.secret, cleanToken);
+      const delta = getAuthenticatorCheckDelta(
+        secretOrNull.secret,
+        cleanToken,
+        epochSeconds,
+      );
       if (delta === null) {
         return false;
       }
@@ -203,7 +202,7 @@ export class TOTPService {
   }
 
   generateToken(secret: TOTPSecret): string {
-    return generateAuthenticatorToken(secret.secret);
+    return generateAuthenticatorToken(secret.secret, epochSecondsFor(this));
   }
 
   async generateQRCode(secret: TOTPSecret): Promise<string> {
@@ -229,6 +228,5 @@ export function createTOTPService(config: TOTPConfig): TOTPService {
   return new TOTPService({
     encryptionKey: config.encryptionKey,
     issuer: config.issuer,
-    devMode: config.devMode,
   });
 }

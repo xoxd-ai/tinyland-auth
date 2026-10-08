@@ -139,3 +139,61 @@ Every role at or above `member` holds `MEMBER_SELF_SERVICE_CORE`
 -- there are no hand-maintained role arrays. Machine-readable charter:
 `ROLE_CHARTER` and `PERMISSION_FEATURE_DOMAIN` in
 `src/types/permissions.ts`.
+
+## Test harness (not published)
+
+Since 1.0.0 (rulings RS5 and RS6, TIN-5766) the production package has no
+test bypass and no test seam:
+
+- `TOTPService` has no `devMode` / `testCode` shortcut and no injectable
+  verifier. Every code is checked by otplib against the stored secret.
+- `TOTPService`, `SessionManager` and `BootstrapService` take no clock or
+  recovery-code generator option. They use the system clock and the CSPRNG.
+- `BootstrapService` takes no TOTP verifier and no TOTP secret generator. It
+  generates the first admin's secret itself and verifies the code itself, so
+  no callback can accept an arbitrary code.
+- The mTLS helpers have no development pass: no host or `NODE_ENV` admits a
+  request that carries no forwarded certificate headers. They trust those
+  headers, so the edge proxy must strip client-supplied copies; without
+  `validFingerprints`, a forwarded subject with the verify header absent or
+  `NONE` is admitted.
+
+The test harness lives in `src/testing` and stays in this repository. It is
+behind a hard gate:
+
+1. **Compile-time exclusion.** `tsconfig.json` and Bazel `//:tinyland_auth`
+   exclude `src/testing`, so `dist/`, `//:pkg` and the npm tarball never
+   contain it. It builds only with `pnpm build:testing` into `dist-testing/`,
+   which is git-ignored and not in `files`.
+2. **Not exported.** `package.json` has no `./testing` entry, so
+   `import '@tummycrypt/tinyland-auth/testing'` fails with
+   `ERR_PACKAGE_PATH_NOT_EXPORTED` under every export condition.
+3. **Load gate.** The module throws `TestingEntryRefusedError` when it is
+   evaluated unless `process.env.NODE_ENV` is exactly `test`. Unset, empty,
+   `production`, `development` and every other value refuse. It never reads a
+   caller-supplied environment.
+4. **Admission gate.** `createTestAdmissionIssuer` also needs
+   `TINYLAND_AUTH_TEST_ADMISSION=enabled`. It reads `process.env` when it is
+   created and again on every `admit()`.
+
+The helpers are `createTestTOTPService`, `createTestSessionManager` and
+`createTestBootstrapService` (test clock, deterministic recovery codes),
+`createManualClock`, `createDeterministicBackupCodeGenerator`,
+`generateTestIdentity` and `createTestAdmissionIssuer`. Package tests import
+them from `src/testing`.
+
+`pnpm check:production-artifact` packs the package, extracts the tarball and
+runs `scripts/check-production-artifact.mjs` on it. Bazel
+`//:production_artifact_test` runs the same check on `//:pkg`. The check fails
+in any of these cases:
+
+- a testing path, testing symbol, the testing sentinel or a removed bypass name
+  ships in the package;
+- one of those appears in a production Vite bundle of every public entry;
+- `./testing` resolves.
+
+`tests/production-artifact.test.ts` injects each kind of leak and checks that
+the check catches it.
+
+Production first-admin bootstrap stays the attended `BootstrapService` flow.
+Upgrading from 0.x: see [docs/migration-1.0.md](docs/migration-1.0.md).
