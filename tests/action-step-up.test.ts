@@ -63,7 +63,8 @@ describe('file-backed action-bound TOTP step-up', () => {
     const verified = { ...pending, state: 'verified', verifiedAt: START, permitDigest: hmac('permit') };
     const consumed = { ...verified, state: 'consumed', consumedAt: START, receiptDigest: hmac('receipt') };
     const invalid = [
-      { ...pending, action: 1 }, { ...pending, state: 'unknown' },
+      { ...pending, action: 1 }, { ...pending, action: 'spoke.owner.bind.unknown' },
+      { ...pending, state: 'unknown' },
       { ...pending, createdAt: String(START) }, { ...pending, expiresAt: String(START + 1000) },
       { ...pending, failures: '0' }, { ...pending, extra: true },
       { ...verified, verifiedAt: String(START) }, { ...verified, verifiedAt: pending.expiresAt },
@@ -147,6 +148,96 @@ describe('file-backed action-bound TOTP step-up', () => {
       .rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     await expect(f.store.consume({ challengeId: challenge.challengeId, permitId: permit.permitId, binding: bound }))
       .resolves.toMatchObject({ action: bound.action });
+  });
+
+  it('persists an exact spoke-owner binding across restart and consumes it only once', async () => {
+    const f = await fixture();
+    const bound: ActionStepUpBinding = { ...binding(), action: 'spoke.owner.bind', resourceId: 'target-owner' };
+    const challenge = await f.store.issue(bound);
+    const verifyFactor = vi.fn(async () => true);
+    const permit = await f.fresh().verify({ challengeId: challenge.challengeId, identity: bound }, verifyFactor);
+    expect(verifyFactor).toHaveBeenCalledOnce();
+    await expect(f.fresh().verify({ challengeId: challenge.challengeId, identity: bound }, verifyFactor))
+      .rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(verifyFactor).toHaveBeenCalledOnce();
+    const input = { challengeId: challenge.challengeId, permitId: permit.permitId, binding: bound };
+    await expect(f.fresh().consume(input)).resolves.toMatchObject({
+      action: 'spoke.owner.bind', resourceId: 'target-owner', userId: bound.userId,
+      factorBinding: bound.factorBinding,
+    });
+    await expect(f.fresh().consume(input)).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('denies changed spoke-binding identity, factor, action, resource, intent and target without spending the permit', async () => {
+    const f = await fixture();
+    const bound: ActionStepUpBinding = { ...binding(), action: 'spoke.owner.bind', resourceId: 'target-owner' };
+    const challenge = await f.store.issue(bound);
+    const verifyFactor = vi.fn(async () => true);
+    for (const field of ['userId', 'sessionBinding', 'credentialBinding', 'authorityBinding', 'factorBinding'] as const) {
+      const identity: ActionStepUpIdentity = { ...bound, [field]: field === 'userId' ? 'another-owner' : hmac(`changed:${field}`) };
+      await expect(f.fresh().verify({ challengeId: challenge.challengeId, identity }, verifyFactor))
+        .rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    }
+    expect(verifyFactor).not.toHaveBeenCalled();
+    const badFactor = vi.fn(async () => false);
+    await expect(f.fresh().verify({ challengeId: challenge.challengeId, identity: bound }, badFactor))
+      .rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(badFactor).toHaveBeenCalledOnce();
+    const permit = await f.fresh().verify({ challengeId: challenge.challengeId, identity: bound }, verifyFactor);
+    const filename = path.join(f.directory, (await f.files())[0]);
+    const verified = await fs.readFile(filename, 'utf8');
+    const changes: ActionStepUpBinding[] = [
+      { ...bound, action: 'user.access.update' },
+      { ...bound, resourceKind: 'invitation' },
+      { ...bound, resourceId: 'another-target' },
+      { ...bound, intentDigest: hmac('changed-spoke-intent') },
+      { ...bound, targetDigest: hmac('changed-spoke-target') },
+      { ...bound, userId: 'another-owner' },
+      { ...bound, sessionBinding: hmac('changed-session') },
+      { ...bound, credentialBinding: hmac('changed-credential') },
+      { ...bound, authorityBinding: hmac('changed-authority') },
+      { ...bound, factorBinding: hmac('changed-factor') },
+    ];
+    for (const changed of changes) {
+      await expect(f.fresh().consume({ challengeId: challenge.challengeId, permitId: permit.permitId, binding: changed }))
+        .rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+      expect(await fs.readFile(filename, 'utf8')).toBe(verified);
+    }
+    await expect(f.fresh().consume({ challengeId: challenge.challengeId, permitId: 'B'.repeat(43), binding: bound }))
+      .rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(await fs.readFile(filename, 'utf8')).toBe(verified);
+    await expect(f.fresh().consume({ challengeId: challenge.challengeId, permitId: permit.permitId, binding: bound }))
+      .resolves.toMatchObject({ action: 'spoke.owner.bind' });
+  });
+
+  it.each(['spoke.owner.bind.unknown', 'spoke.owner', 'unknown'])('rejects unknown action %s before persistence', async (action) => {
+    const f = await fixture();
+    const unknown = binding();
+    Object.assign(unknown, { action });
+    await expect(f.store.issue(unknown)).rejects.toMatchObject({ code: 'INVALID' });
+    expect(await f.files()).toHaveLength(0);
+  });
+
+  it('prunes an expired spoke permit after restart and continues legacy actions without accepting replay', async () => {
+    const f = await fixture({ ttlMs: 1_000, maxRecords: 1 });
+    const bound: ActionStepUpBinding = { ...binding(), action: 'spoke.owner.bind' };
+    const challenge = await f.store.issue(bound);
+    const permit = await f.fresh().verify({ challengeId: challenge.challengeId, identity: bound }, async () => true);
+    const input = { challengeId: challenge.challengeId, permitId: permit.permitId, binding: bound };
+    f.setTime(START + 1_000);
+    await expect(f.fresh().consume(input)).rejects.toMatchObject({ code: 'EXPIRED' });
+    const legacy = binding();
+    const replacement = await f.fresh().issue(legacy);
+    expect(replacement.challengeId).not.toBe(challenge.challengeId);
+    expect(await f.files()).toHaveLength(1);
+    await expect(f.fresh().consume(input)).rejects.toMatchObject({ code: 'INVALID' });
+    const verifyFactor = vi.fn(async () => true);
+    await expect(f.fresh().verify({ challengeId: challenge.challengeId, identity: bound }, verifyFactor))
+      .rejects.toMatchObject({ code: 'INVALID' });
+    expect(verifyFactor).not.toHaveBeenCalled();
+    const legacyPermit = await f.fresh().verify({ challengeId: replacement.challengeId, identity: legacy }, verifyFactor);
+    await expect(f.fresh().consume({ challengeId: replacement.challengeId, permitId: legacyPermit.permitId, binding: legacy }))
+      .resolves.toMatchObject({ action: 'federation.activate' });
   });
 
   it('bounds bad-code attempts and never invokes a factor callback after the budget is spent', async () => {
