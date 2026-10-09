@@ -13,10 +13,10 @@ the Tinyland Bazel registry is the only delivery path for this module (RU6/RU8,
   package-manager specifier or a workspace-local copy.
 - CI validates the package through the repo-owned GloriousFlywheel runner lane
   and `//:pkg //:test //:typecheck`.
-- npmjs publication is disabled in package workflows, and there is no GitHub
-  Packages mirror publication for new versions: the manifest is `private: true`
-  and `npm_package(publishable = False)`. Earlier provider artifacts are left
-  in place and are not a delivery or fallback lane.
+- npmjs publication is disabled in package workflows, and there is no
+  GitHub Packages mirror publication for new versions: the manifest is
+  `private: true` and `npm_package(publishable = False)`. Earlier provider
+  artifacts are left in place and are not a delivery or fallback lane.
 - GitHub tags and releases identify the source that a registry entry wraps.
 
 ## Exports

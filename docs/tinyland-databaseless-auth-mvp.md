@@ -13,8 +13,9 @@ and is covered by
 ## Bazel And Package Proof
 
 Package adoption is proved through the Bazel package lane, not by treating a
-local pnpm workspace copy as release truth. CI runs on the repo-owned
-GloriousFlywheel runner lane and validates `//:pkg //:test //:typecheck`;
+local pnpm workspace copy as release truth. CI runs on the
+repo-owned GloriousFlywheel runner lane and validates
+`//:pkg //:test //:typecheck`;
 `//:test` includes the MVP example plus the databaseless auth tests, and
 `//:release_metadata_test`, `//:invitation_authority_test`,
 `//:package_artifact_test` and `//:server_entry_artifact_test` check metadata,
