@@ -4,29 +4,20 @@ Production-grade authentication system with TOTP, RBAC, and pluggable storage.
 
 ## Consumption And Release Authority
 
-The TypeScript import API stays under `@tummycrypt/tinyland-auth`.
-Bzlmod plus the append-only Tinyland BCR is the sole first-party delivery authority
-([TIN-89](https://linear.app/tinyland/issue/TIN-89),
-[TIN-1629](https://linear.app/tinyland/issue/TIN-1629)). GitHub tags/releases bind
-source identity; neither npmjs nor GitHub Packages is a delivery or fallback lane.
-Historical provider artifacts and tags remain untouched.
+The TypeScript import API stays under `@tummycrypt/tinyland-auth`. Bzlmod plus
+the Tinyland Bazel registry is the only delivery path for this module (RU6/RU8,
+[TIN-89](https://linear.app/tinyland/issue/TIN-89)):
 
-Consumers pin `tummycrypt_tinyland_auth` in `MODULE.bazel` and link its `//:pkg`
-through Bazel's `npm_link_package`, not a first-party package-manager specifier
-or vendored copy. `npm_package`, `npm_translate_lock`, Node and locked pnpm
-dependencies are internal build/consumer mechanics, not provider publishers.
-The manifest's `private: true` and `npm_package(publishable = False)` prevent
-package-provider publication without changing TypeScript import paths.
-
-The legacy CI/publish pair and network `npx` Bazel fallback are retired in this
-source candidate. GF qualification remains **inert**: the caller stays under
-`docs/`, pending exact released-contract and admission review. No active remote
-checks are claimed. The finite graph retains `//:test`, `//:typecheck`,
-`//:release_metadata_test`, `//:invitation_authority_test`, `//:pkg`, and
-`//:package_artifact_test`; the last checks the real Bazel package and runs
-locked publint without npm/pnpm packing. See the
-[GF qualification boundary](docs/gf-v4-qualification-preparation.md) and
-[0.7.2 candidate disposition](docs/release-candidate-0.7.2.md).
+- Consumers pin `tummycrypt_tinyland_auth` in `MODULE.bazel` through the
+  Tinyland Bazel registry and link its `//:pkg` with `npm_link_package`, not a
+  package-manager specifier or a workspace-local copy.
+- CI validates the package through the repo-owned GloriousFlywheel runner lane
+  and `//:pkg //:test //:typecheck`.
+- npmjs publication is disabled in package workflows, and there is no GitHub
+  Packages mirror publication for new versions: the manifest is `private: true`
+  and `npm_package(publishable = False)`. Earlier provider artifacts are left
+  in place and are not a delivery or fallback lane.
+- GitHub tags and releases identify the source that a registry entry wraps.
 
 ## Exports
 
