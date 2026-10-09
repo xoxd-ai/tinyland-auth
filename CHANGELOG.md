@@ -17,6 +17,9 @@ removed or renamed.
   `BootstrapJournalError`, `FileTotpEnrollmentCoordinator` (ordinary and
   bound self-enrollment v2), `FileTotpRetirementCoordinator` and
   `TotpRetirementError`, `FileActionStepUpStore`, plus their types.
+  `FileActionStepUpStore` accepts the `spoke.owner.bind` action used by the
+  Mothership user-spoke ownership binding route (candidate
+  `auth-spoke-owner-bind-20261001`, 1f1b294).
 - **Bounded sessions**: `SessionConfig.sessionStrategy = 'bounded'` with
   `BoundedSessionPolicy` and `createSessionWithPolicy` on the file and memory
   adapters, plus the `deleteTOTPSecretExpected` / `deleteBackupCodesExpected`
