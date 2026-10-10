@@ -34,6 +34,19 @@ removed or renamed.
   missing file counts as an absent credential. Filesystems must support
   acknowledged file and directory sync.
 
+- **`./admin-user-repository`** (RV15): the archived
+  `@tummycrypt/tinyland-admin-user-repository` module is folded in from its
+  0.2.4 candidate (46c8cbd): `AdminUserRepository`, `adminUserRepository`,
+  `configure`/`getConfig`/`resetConfig`, the public handle directory, and the
+  `federationEnabled` opt-in persisted with durable atomic replacement (only a
+  literal `true` opts in). Public reads (`findAllPublic`, `findByIdPublic`,
+  `findByHandlePublic`) now copy the explicit `PUBLIC_ADMIN_USER_FIELDS`
+  allowlist instead of removing two known secret fields, so any other stored
+  credential material never reaches a public projection. Consumers replace the
+  `tummycrypt_tinyland_admin_user_repository` bazel_dep with this subpath; the
+  standalone repository stays archived. The default `filePermissions` is now
+  `0o600` (was `0o666`); configure it explicitly to keep a wider mode.
+
 ### RS6 reconciliation
 
 - The candidate's public `now` options on `FileBootstrapConfig`,

@@ -32,6 +32,9 @@ the Tinyland Bazel registry is the only delivery path for this module (RU6/RU8,
 - `./audit` — audit logging
 - `./cred-gen` — credential generation and display
 - `./validation` — input validation utilities
+- `./admin-user-repository` — flat-file admin account repository and public
+  handle directory (folded from the archived `tinyland-admin-user-repository`
+  under RV15); public reads copy an explicit field allowlist only
 
 ## Invitation Authority
 

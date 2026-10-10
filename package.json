@@ -48,6 +48,10 @@
     "./validation": {
       "types": "./dist/validation/index.d.ts",
       "import": "./dist/validation/index.js"
+    },
+    "./admin-user-repository": {
+      "types": "./dist/admin-user-repository/index.d.ts",
+      "import": "./dist/admin-user-repository/index.js"
     }
   },
   "files": [
