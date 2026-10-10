@@ -1812,40 +1812,43 @@ describe('Edge cases', () => {
 	});
 });
 
-describe(RV15 public projection allowlist, () => {
+describe('RV15 public projection allowlist', () => {
 	const repo = new AdminUserRepository();
 	const secretBearing = makeUser({
-		id: allow-1,
-		totpSecretId: secret-id,
+		id: 'allow-1',
+		totpSecretId: 'secret-id',
 		federationEnabled: true,
 		isLocked: true,
-		bio: public bio,
-		totpSecret: encrypted-totp-secret,
-		backupCodes: [hash-a, hash-b],
-		recoveryCodeHashes: [hash-c],
-		githubAccessToken: oauth-access-fixture-never-public,
+		bio: 'public bio',
+		totpSecret: 'encrypted-totp-secret',
+		backupCodes: ['hash-a', 'hash-b'],
+		recoveryCodeHashes: ['hash-c'],
+		githubAccessToken: 'oauth-access-fixture-never-public',
 		sessionVersion: 7,
 	});
 
-	it(copies only allowlisted fields into public reads, async () => {
+	it('copies only allowlisted fields into public reads', async () => {
 		setFileContent([secretBearing]);
 		const [listed] = await repo.findAllPublic();
-		const byId = await repo.findByIdPublic(allow-1);
-		const byHandle = await repo.findByHandlePublic(testuser);
+		const byId = await repo.findByIdPublic('allow-1');
+		const byHandle = await repo.findByHandlePublic('testuser');
 		for (const projection of [listed, byId, byHandle]) {
 			expect(projection).toBeTruthy();
 			for (const key of Object.keys(projection as object)) {
 				expect(PUBLIC_ADMIN_USER_FIELDS as readonly string[]).toContain(key);
 			}
-			expect(projection).toMatchObject({ id: allow-1, federationEnabled: true, isLocked: true, bio: public bio });
+			expect(projection).toMatchObject({ id: 'allow-1', federationEnabled: true, isLocked: true, bio: 'public bio' });
 			const serialized = JSON.stringify(projection);
-			for (const secret of [passwordHash, totpSecret, secret-id, backupCodes, hash-a, recoveryCodeHashes, oauth-access-fixture-never-public, sessionVersion]) {
+			for (const secret of [
+				'passwordHash', 'totpSecret', 'secret-id', 'backupCodes', 'hash-a',
+				'recoveryCodeHashes', 'oauth-access-fixture-never-public', 'sessionVersion',
+			]) {
 				expect(serialized).not.toContain(secret);
 			}
 		}
 	});
 
-	it(never lists a credential-bearing field name, () => {
+	it('never lists a credential-bearing field name', () => {
 		for (const field of PUBLIC_ADMIN_USER_FIELDS) {
 			expect(field).not.toMatch(/password|secret|hash|token|backup|recovery/i);
 		}
