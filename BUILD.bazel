@@ -62,6 +62,7 @@ vitest_bin.vitest_test(
         "MODULE.bazel",
         "README.md",
         "scripts/check-invitation-authority.mjs",
+        "scripts/check-package-artifact.mjs",
         "scripts/check-production-artifact.mjs",
         "scripts/check-release-metadata.mjs",
         "scripts/ci-bazel-test.sh",
@@ -117,7 +118,27 @@ npm_package(
         ":package.json",
     ],
     package = "@tummycrypt/tinyland-auth",
-    version = "1.0.0",
+    # RU6/RU8: Bzlmod is the only delivery path; the manifest is private.
+    publishable = False,
+    version = "1.1.0",
+)
+
+# Import the Bazel-produced ./sveltekit/server entry in plain Node (no Svelte
+# or Vitest transform), so a stray client-rune re-export fails here, and check
+# that the artifact preserves every export and stays non-publishable.
+js_test(
+    name = "server_entry_artifact_test",
+    args = ["$(rootpath :pkg)"],
+    chdir = package_name(),
+    data = [
+        "package.json",
+        "scripts/check-package-artifact.mjs",
+        ":node_modules/@sveltejs/kit",
+        ":node_modules/bcryptjs",
+        ":node_modules/publint",
+        ":pkg",
+    ],
+    entry_point = "scripts/check-package-artifact.mjs",
 )
 
 # RS5 / RS6 production-exclusion proof on the artifact that is published: no

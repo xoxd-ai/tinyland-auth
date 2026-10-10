@@ -3,8 +3,8 @@
 // the full role x predicate derivation matrix.
 //
 // These tests are deliberately DETERMINISTIC and EXHAUSTIVE (no random
-// property sampling): the whole role/permission space is 8 roles x 23
-// permission strings, so we enumerate it.
+// property sampling): the whole role/permission space is 8 roles x 25
+// permission strings (23 role-granted, 2 explicit-only), so we enumerate it.
 //
 // 0.5.0 (TIN-2637/TIN-2638, operator-ratified 2026-07-07): the ninth
 // feature domain `federation` with `admin.federation.view` and
@@ -19,6 +19,7 @@ import {
 } from '../src/types/auth.js';
 import {
   PERMISSIONS,
+  EXPLICIT_USER_PERMISSIONS,
   ROLE_PERMISSIONS,
   MEMBER_SELF_SERVICE_CORE,
   FEATURE_DOMAINS,
@@ -131,7 +132,7 @@ describe('P3: feature-domain registry covers the permission vocabulary exactly',
     expect([...registryKeys].sort()).toEqual([...permissionValues].sort());
   });
 
-  it('every permission granted in ROLE_PERMISSIONS is registered, and vice versa', () => {
+  it('role grants and explicit-only permissions form disjoint, exhaustive registry partitions', () => {
     const granted = new Set<string>();
     for (const role of ADMIN_ROLES) {
       for (const permission of ROLE_PERMISSIONS[role]) {
@@ -139,6 +140,7 @@ describe('P3: feature-domain registry covers the permission vocabulary exactly',
       }
     }
     const registryKeys = new Set(Object.keys(PERMISSION_FEATURE_DOMAIN));
+    const explicitOnly = new Set<string>(EXPLICIT_USER_PERMISSIONS);
 
     for (const permission of granted) {
       expect(
@@ -146,10 +148,14 @@ describe('P3: feature-domain registry covers the permission vocabulary exactly',
         `granted permission ${permission} must be registered`,
       ).toBe(true);
     }
+    for (const permission of explicitOnly) {
+      expect(registryKeys.has(permission)).toBe(true);
+      expect(granted.has(permission), `${permission} must have no default role grant`).toBe(false);
+    }
     for (const permission of registryKeys) {
       expect(
-        granted.has(permission),
-        `registered permission ${permission} must be granted to some role`,
+        granted.has(permission) || explicitOnly.has(permission),
+        `registered permission ${permission} must be role-granted or explicit-only`,
       ).toBe(true);
     }
   });
@@ -158,8 +164,18 @@ describe('P3: feature-domain registry covers the permission vocabulary exactly',
     for (const [permission, domain] of Object.entries(PERMISSION_FEATURE_DOMAIN)) {
       expect(FEATURE_DOMAINS).toContain(domain);
       const expectedDomain =
-        permission === 'admin.access' ? 'access' : permission.split('.')[1];
+        permission === 'admin.access' ? 'access'
+          : permission.startsWith('admin.') ? permission.split('.')[1]
+            : permission.split('.')[0];
       expect(domain, `domain tag for ${permission}`).toBe(expectedDomain);
+    }
+  });
+
+  it('own-scope permissions reuse content and federation without widening the member floor', () => {
+    expect(PERMISSION_FEATURE_DOMAIN['content.own.publish']).toBe('content');
+    expect(PERMISSION_FEATURE_DOMAIN['federation.own.deliver']).toBe('federation');
+    for (const permission of EXPLICIT_USER_PERMISSIONS) {
+      expect(MEMBER_SELF_SERVICE_CORE).not.toContain(permission);
     }
   });
 

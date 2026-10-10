@@ -7,9 +7,12 @@
 
 
 
-import { promises as fs } from 'fs';
+import { constants, promises as fs } from 'fs';
 import path from 'path';
 import { randomBytes, randomUUID } from 'crypto';
+import { totpRetirementFactorSnapshotDigest, totpRetirementRecoverySetDigest } from './totp-retirement-material.js';
+import type { BoundedSessionPolicy } from '../types/config.js';
+import { assertBoundedSessionPolicy, assertStoredSessions, boundedSessions } from './session-policy.js';
 import type { IStorageAdapter, StorageAdapterConfig, AuditEventFilters } from './interface.js';
 import type {
   AdminUser,
@@ -35,6 +38,62 @@ const DEFAULT_CONFIG: FileStorageConfig = {
   totpDir: '.totp-secrets',
   sessionMaxAge: 7 * 24 * 60 * 60 * 1000, 
 };
+
+// One process owns this storage root. Sharing the queue across adapter instances
+// prevents lost updates; it does not claim cross-process/distributed locking.
+const sessionFileTails = new Map<string, Promise<unknown>>();
+
+function withSessionFileQueue<T>(filename: string, operation: () => Promise<T>): Promise<T> {
+  const key = path.resolve(filename);
+  const previous = sessionFileTails.get(key) ?? Promise.resolve();
+  const current = previous.then(operation, operation);
+  sessionFileTails.set(key, current);
+  const cleanup = () => {
+    if (sessionFileTails.get(key) === current) sessionFileTails.delete(key);
+  };
+  void current.then(cleanup, cleanup);
+  return current;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isText(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && !value.includes('\0');
+}
+
+function isTimestamp(value: unknown): value is string {
+  return isText(value) && Number.isFinite(Date.parse(value));
+}
+
+function isStoredFactor(value: unknown, handle: string): value is EncryptedTOTPSecret {
+  if (!isRecord(value)) return false;
+  return value.handle === handle && isText(value.userId)
+    && ['encryptedSecret', 'iv', 'authTag', 'salt'].every(key => isText(value[key]))
+    && isTimestamp(value.createdAt)
+    && (value.lastUsedAt === undefined || isTimestamp(value.lastUsedAt))
+    && (value.lastUsedTotpStep === undefined || (Number.isSafeInteger(value.lastUsedTotpStep) && (value.lastUsedTotpStep as number) >= 0))
+    && typeof value.backupCodesGenerated === 'boolean'
+    && Number.isSafeInteger(value.version) && (value.version as number) >= 1;
+}
+
+function isStoredBackupCodes(value: unknown, userId: string): value is BackupCodeSet {
+  if (!isRecord(value) || value.userId !== userId || !Array.isArray(value.codes)
+    || !isTimestamp(value.generatedAt)
+    || (value.lastUsedAt !== undefined && !isTimestamp(value.lastUsedAt))) return false;
+  const ids = new Set<string>();
+  const hashes = new Set<string>();
+  return value.codes.every(code => {
+    if (!isRecord(code) || !isText(code.id) || typeof code.hash !== 'string'
+      || !/^[a-f0-9]{64}$/.test(code.hash) || typeof code.used !== 'boolean'
+      || (code.usedAt !== undefined && !isTimestamp(code.usedAt))
+      || ids.has(code.id) || hashes.has(code.hash)) return false;
+    ids.add(code.id);
+    hashes.add(code.hash);
+    return true;
+  });
+}
 
 
 
@@ -85,7 +144,26 @@ export class FileStorageAdapter implements IStorageAdapter {
   }
 
   async getAllSessions(): Promise<Session[]> {
-    return this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
+    return withSessionFileQueue(this.getPath('sessions.json'), () => this.readSessions());
+  }
+
+  private async readSessions(): Promise<Session[]> {
+    const sessions = await this.readJsonFile<unknown>(this.getPath('sessions.json'), []);
+    assertStoredSessions(sessions);
+    return sessions;
+  }
+
+  private mutateSessions<T>(
+    operation: (sessions: Session[]) => { sessions: Session[]; result: T },
+  ): Promise<T> {
+    const filename = this.getPath('sessions.json');
+    return withSessionFileQueue(filename, async () => {
+      const next = operation(await this.readSessions());
+      assertStoredSessions(next.sessions);
+      // Already inside the full read/modify/write queue: do not re-enter it.
+      await this.writeJsonFileAtomic(filename, next.sessions);
+      return next.result;
+    });
   }
 
   
@@ -145,8 +223,20 @@ export class FileStorageAdapter implements IStorageAdapter {
     const tempPath = `${filePath}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`;
 
     try {
-      await fs.writeFile(tempPath, JSON.stringify(data, null, 2), 'utf8');
-      await fs.rename(tempPath, filePath);  
+      const temporary = await fs.open(tempPath, 'wx', 0o600);
+      try {
+        await temporary.writeFile(JSON.stringify(data, null, 2), 'utf8');
+        await temporary.sync();
+      } finally {
+        await temporary.close();
+      }
+      await fs.rename(tempPath, filePath);
+      const directory = await fs.open(path.dirname(filePath), 'r');
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
     } catch (error) {
       
       try { await fs.unlink(tempPath); } catch {  }
@@ -250,7 +340,7 @@ export class FileStorageAdapter implements IStorageAdapter {
   
 
   async getSession(id: string): Promise<Session | null> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
+    const sessions = await this.getAllSessions();
     return sessions.find(s => s.id === id) || null;
   }
 
@@ -259,82 +349,95 @@ export class FileStorageAdapter implements IStorageAdapter {
     userData: Partial<AdminUser>,
     metadata?: SessionMetadata
   ): Promise<Session> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
+    return this.insertSession(userId, userData, metadata);
+  }
 
-    const now = new Date();
-    const expires = new Date(now.getTime() + this.config.sessionMaxAge);
+  async createSessionWithPolicy(
+    userId: string,
+    userData: Partial<AdminUser>,
+    metadata: SessionMetadata | undefined,
+    policy: BoundedSessionPolicy,
+  ): Promise<Session> {
+    assertBoundedSessionPolicy(policy);
+    return this.insertSession(userId, userData, metadata, { ...policy });
+  }
 
-    const session: Session = {
-      id: randomBytes(32).toString('hex'),
-      userId,
-      expires: expires.toISOString(),
-      expiresAt: expires.toISOString(),
-      createdAt: now.toISOString(),
-      user: userData.id ? {
-        id: userData.id,
-        username: userData.handle || '',
-        name: userData.displayName || userData.handle || '',
-        role: userData.role || 'viewer',
-        needsOnboarding: userData.needsOnboarding,
-        onboardingStep: userData.onboardingStep,
-      } : undefined,
-      clientIp: metadata?.clientIp || '',
-      clientIpMasked: metadata?.clientIpMasked,
-      userAgent: metadata?.userAgent || '',
-      deviceType: metadata?.deviceType,
-      browserFingerprint: metadata?.browserFingerprint,
-      geoLocation: metadata?.geoLocation,
-    };
+  private insertSession(
+    userId: string,
+    userData: Partial<AdminUser>,
+    metadata?: SessionMetadata,
+    policy?: BoundedSessionPolicy,
+  ): Promise<Session> {
+    return this.mutateSessions((sessions) => {
+      const now = new Date();
+      const expires = new Date(now.getTime() + this.config.sessionMaxAge);
+      const session: Session = {
+        id: randomBytes(32).toString('hex'),
+        userId,
+        expires: expires.toISOString(),
+        expiresAt: expires.toISOString(),
+        createdAt: now.toISOString(),
+        user: userData.id ? {
+          id: userData.id,
+          username: userData.handle || '',
+          name: userData.displayName || userData.handle || '',
+          role: userData.role || 'viewer',
+          needsOnboarding: userData.needsOnboarding,
+          onboardingStep: userData.onboardingStep,
+        } : undefined,
+        clientIp: metadata?.clientIp || '',
+        clientIpMasked: metadata?.clientIpMasked,
+        userAgent: metadata?.userAgent || '',
+        deviceType: metadata?.deviceType,
+        browserFingerprint: metadata?.browserFingerprint,
+        geoLocation: metadata?.geoLocation,
+      };
 
-    sessions.push(session);
-    await this.writeJsonFile(this.getPath('sessions.json'), sessions);
-    return session;
+      return {
+        sessions: policy ? boundedSessions(sessions, session, policy, now.getTime()) : [...sessions, session],
+        result: session,
+      };
+    });
   }
 
   async updateSession(id: string, updates: Partial<Session>): Promise<Session> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
-    const index = sessions.findIndex(s => s.id === id);
-
-    if (index === -1) {
-      throw new Error(`Session not found: ${id}`);
-    }
-
-    sessions[index] = { ...sessions[index], ...updates };
-    await this.writeJsonFile(this.getPath('sessions.json'), sessions);
-    return sessions[index];
+    return this.mutateSessions((sessions) => {
+      const index = sessions.findIndex(s => s.id === id);
+      if (index === -1) throw new Error(`Session not found: ${id}`);
+      sessions[index] = { ...sessions[index], ...updates };
+      return { sessions, result: sessions[index] };
+    });
   }
 
   async deleteSession(id: string): Promise<boolean> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
-    const index = sessions.findIndex(s => s.id === id);
-
-    if (index === -1) return false;
-
-    sessions.splice(index, 1);
-    await this.writeJsonFile(this.getPath('sessions.json'), sessions);
-    return true;
+    return this.mutateSessions((sessions) => {
+      const index = sessions.findIndex(s => s.id === id);
+      if (index === -1) return { sessions, result: false };
+      sessions.splice(index, 1);
+      return { sessions, result: true };
+    });
   }
 
   async deleteUserSessions(userId: string): Promise<number> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
-    const before = sessions.length;
-    const filtered = sessions.filter(s => s.userId !== userId);
-    await this.writeJsonFile(this.getPath('sessions.json'), filtered);
-    return before - filtered.length;
+    return this.mutateSessions((sessions) => {
+      const before = sessions.length;
+      const filtered = sessions.filter(s => s.userId !== userId);
+      return { sessions: filtered, result: before - filtered.length };
+    });
   }
 
   async getSessionsByUser(userId: string): Promise<Session[]> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
+    const sessions = await this.getAllSessions();
     return sessions.filter(s => s.userId === userId);
   }
 
   async cleanupExpiredSessions(): Promise<number> {
-    const sessions = await this.readJsonFile<Session[]>(this.getPath('sessions.json'), []);
-    const now = new Date();
-    const before = sessions.length;
-    const filtered = sessions.filter(s => new Date(s.expires) > now);
-    await this.writeJsonFile(this.getPath('sessions.json'), filtered);
-    return before - filtered.length;
+    return this.mutateSessions((sessions) => {
+      const now = new Date();
+      const before = sessions.length;
+      const filtered = sessions.filter(s => new Date(s.expires) > now);
+      return { sessions: filtered, result: before - filtered.length };
+    });
   }
 
   
@@ -342,15 +445,12 @@ export class FileStorageAdapter implements IStorageAdapter {
   
 
   async getTOTPSecret(handle: string): Promise<EncryptedTOTPSecret | null> {
-    try {
-      const secret = await this.readJsonFile<EncryptedTOTPSecret | null>(
-        this.getTotpPath(handle),
-        null
-      );
-      return secret;
-    } catch {
-      return null;
-    }
+    // Only a missing file is absence. Parse, permissions and shape failures
+    // must never authorize enrollment to replace an existing credential.
+    const secret = await this.readJsonFile<unknown>(this.getTotpPath(handle), undefined);
+    if (secret === undefined) return null;
+    if (!isStoredFactor(secret, handle)) throw new Error('Invalid stored TOTP credential');
+    return secret;
   }
 
   async saveTOTPSecret(handle: string, secret: EncryptedTOTPSecret): Promise<void> {
@@ -366,19 +466,103 @@ export class FileStorageAdapter implements IStorageAdapter {
     }
   }
 
+  /**
+   * Additive retirement capability; legacy generic adapter API remains unchanged.
+   * Caller must hold the shared exclusive auth gate. Credential directories and
+   * their ancestors must be operator-owned with no independent writer. The path
+   * checks detect unsafe existing state; they are not an atomic defense against
+   * out-of-gate directory/file swaps between lstat, open and unlink.
+   */
+  async deleteTOTPSecretExpected(handle: string, expectedDigest: string): Promise<void> {
+    this.retirementComponent(handle);
+    if (!/^[a-f0-9]{64}$/.test(expectedDigest)) throw new Error('Invalid retirement material');
+    await this.deleteCredentialExpected(this.getTotpPath(handle), expectedDigest, value => {
+      if (!isStoredFactor(value, handle)) throw new Error('Invalid retirement material');
+      return totpRetirementFactorSnapshotDigest(value);
+    });
+  }
+
+  async deleteBackupCodesExpected(userId: string, expectedDigest: string | null): Promise<void> {
+    this.retirementComponent(userId);
+    if (expectedDigest !== null && !/^[a-f0-9]{64}$/.test(expectedDigest)) throw new Error('Invalid retirement material');
+    await this.deleteCredentialExpected(this.getBackupCodesPath(userId), expectedDigest, value => {
+      if (!isStoredBackupCodes(value, userId)) throw new Error('Invalid retirement material');
+      return totpRetirementRecoverySetDigest(value)!;
+    });
+  }
+
+  /** Same exclusive-gate/operator-owned-storage precondition as expected deletion; not cross-process CAS. */
+  async clearTotpFlagsExpected(userId: string, handle: string): Promise<void> {
+    this.retirementComponent(userId); this.retirementComponent(handle);
+    const matches = (await this.getAllUsers()).filter(user => user.id === userId || user.handle === handle);
+    if (matches.length !== 1 || matches[0].id !== userId || matches[0].handle !== handle ||
+        !((matches[0].totpEnabled === true && matches[0].totpSecretId === handle) ||
+          (matches[0].totpEnabled === false && !matches[0].totpSecretId))) throw new Error('Retirement owner changed');
+    // updateUser's JSON replacement omits undefined; don't recreate the account or alter grants.
+    await this.updateUser(userId, { totpEnabled: false, totpSecretId: undefined });
+    const current = await this.getUser(userId);
+    if (!current || current.handle !== handle || current.totpEnabled !== false || current.totpSecretId) throw new Error('Retirement flags unavailable');
+  }
+
+  private retirementComponent(value: string): void {
+    if (typeof value !== 'string' || value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error('Invalid retirement identity');
+  }
+
+  private async deleteCredentialExpected(filename: string, expected: string | null, digest: (value: unknown) => string): Promise<void> {
+    try {
+      const absolute = path.resolve(filename);
+      const parent = path.dirname(absolute);
+      // Validate each ancestor before following it, including missing-child replay.
+      let ancestor = path.parse(parent).root;
+      for (const part of path.relative(ancestor, parent).split(path.sep).filter(Boolean)) {
+        const next = path.join(ancestor, part);
+        let state;
+        try { state = await fs.lstat(next); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          const existing = await fs.open(ancestor, 'r');
+          try { await existing.sync(); } finally { await existing.close(); }
+          return;
+        }
+        if (!state.isDirectory() || state.isSymbolicLink()) throw new Error('Untrusted credential directory');
+        ancestor = next;
+      }
+      const directory = await fs.open(parent, 'r');
+      try {
+        let file;
+        try { file = await fs.open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          // A previous unlink may have happened before its directory fsync failed.
+          await directory.sync();
+          return;
+        }
+        try {
+          const state = await file.stat();
+          if (!state.isFile() || state.nlink !== 1 || state.size <= 0 || state.size > 256 * 1024) throw new Error('Invalid credential file');
+          const raw = await file.readFile('utf8');
+          if (Buffer.byteLength(raw) > 256 * 1024 || expected === null || digest(JSON.parse(raw)) !== expected) throw new Error('Retirement material changed');
+          const current = await fs.lstat(absolute);
+          if (!current.isFile() || current.nlink !== 1 || current.dev !== state.dev || current.ino !== state.ino ||
+              current.size !== state.size || current.mtimeMs !== state.mtimeMs || current.ctimeMs !== state.ctimeMs) throw new Error('Retirement material changed');
+          await fs.unlink(absolute);
+        } finally { await file.close(); }
+        await directory.sync();
+        try { await fs.lstat(absolute); throw new Error('Credential still present'); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      } finally { await directory.close(); }
+    } catch { throw new Error('Durable credential retirement unavailable'); }
+  }
+
   
   
   
 
   async getBackupCodes(userId: string): Promise<BackupCodeSet | null> {
-    try {
-      return await this.readJsonFile<BackupCodeSet | null>(
-        this.getBackupCodesPath(userId),
-        null
-      );
-    } catch {
-      return null;
-    }
+    const codes = await this.readJsonFile<unknown>(this.getBackupCodesPath(userId), undefined);
+    if (codes === undefined) return null;
+    if (!isStoredBackupCodes(codes, userId)) throw new Error('Invalid stored backup-code credential');
+    return codes;
   }
 
   async saveBackupCodes(userId: string, codeSet: BackupCodeSet): Promise<void> {
