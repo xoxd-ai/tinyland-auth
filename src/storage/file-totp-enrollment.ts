@@ -3,7 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createBackupCodeSet, generateBackupCodes, hashBackupCode } from '../core/backup-codes/index.js';
-import type { TOTPService } from '../core/totp/index.js';
+import { bindTrustedTOTPService, type TOTPService, type TrustedTOTPPrimitives } from '../core/totp/index.js';
 import { ADMIN_ROLES } from '../types/auth.js';
 import type { AdminUser, BackupCodeSet, EncryptedData, EncryptedTOTPSecret, Session } from '../types/auth.js';
 import { nowMsFor } from '../core/seams/index.js';
@@ -84,7 +84,15 @@ export type TotpEnrollmentReceipt = EnrollmentReceiptMaterial & (
 export interface FileTotpEnrollmentConfig {
   /** Private, durable directory; one application process owns this storage root. */
   directory: string;
-  totp: Pick<TOTPService, 'generateSecret' | 'generateQRCode' | 'encrypt' | 'decrypt' | 'verifyTokenWithStep'>;
+  /**
+   * The package's own TOTPService from createTOTPService(). RS6: the
+   * coordinator refuses a structural look-alike, a subclass or an instance
+   * with an overridden method, and always runs the package's own secret
+   * generation, record cipher and RFC 6238 verification. A caller can deny a
+   * completion through {@link beforeComplete}; nothing a caller supplies can
+   * make a code verify.
+   */
+  totp: TOTPService;
   /** Uncached canonical reads. Must not re-enter this coordinator's gate. */
   loadCurrent(binding: TotpEnrollmentBinding): Promise<TotpEnrollmentCurrentState>;
   /**
@@ -117,6 +125,17 @@ export interface FileTotpEnrollmentConfig {
    * here. A thrown error keeps all guarded auth traffic closed until recovery.
    */
   project(completion: TotpEnrollmentCompletion): Promise<void>;
+  /**
+   * Optional DENY-ONLY gate for a NEW completion (for example an application
+   * write-activation phase). Called under the gate once per new completion
+   * attempt, after applied-receipt replay has returned and after the binding,
+   * authority and code format checks, immediately before the coordinator
+   * verifies the code itself. Throw (or reject) to refuse: complete() rejects
+   * with that same error and the pending attempt is left untouched. The return
+   * value is ignored, so this hook can never accept a code. Never wraps
+   * recovery or replay. Must not re-enter the auth gate.
+   */
+  beforeComplete?(operation: 'totp.complete'): void | Promise<void>;
   /** Positive and at most ten minutes. Does not extend an existing attempt. */
   ttlMs?: number;
 }
@@ -390,6 +409,12 @@ export class FileTotpEnrollmentCoordinator {
   private readonly directory: string;
   private readonly gate: ProcessGate;
   private readonly ttlMs: number;
+  /**
+   * RS6: bound once to the genuine TOTPService. Native private fields, so no
+   * later config edit, property write or hook can replace them at runtime.
+   */
+  readonly #totp: TrustedTOTPPrimitives;
+  readonly #beforeComplete: ((operation: 'totp.complete') => void | Promise<void>) | undefined;
 
   /** System time; only the NODE_ENV=test seam registry can substitute a clock (RS6). */
   private now(): Date {
@@ -398,6 +423,9 @@ export class FileTotpEnrollmentCoordinator {
 
   constructor(private readonly config: FileTotpEnrollmentConfig) {
     if (!config.directory) fail('Enrollment directory is required');
+    try { this.#totp = bindTrustedTOTPService(config.totp); } catch (error) { fail((error as Error).message); }
+    if (config.beforeComplete !== undefined && typeof config.beforeComplete !== 'function') fail('beforeComplete must be a function');
+    this.#beforeComplete = config.beforeComplete;
     this.directory = path.resolve(config.directory);
     this.ttlMs = config.ttlMs ?? MAX_TTL_MS;
     if (!Number.isSafeInteger(this.ttlMs) || this.ttlMs <= 0 || this.ttlMs > MAX_TTL_MS) fail('Enrollment TTL must be at most ten minutes');
@@ -476,15 +504,15 @@ export class FileTotpEnrollmentCoordinator {
       } else if (liveUses.length) {
         throw new TotpEnrollmentError('CONFLICT', 'Onboarding cannot discard live self-enrollment proof bindings');
       }
-      const generated = await this.config.totp.generateSecret(state.user!.handle);
+      const generated = await this.#totp.generateSecret(state.user!.handle);
       const plaintextCodes = generateBackupCodes();
       const material: PendingMaterial = {
         state: 'pending', attemptId: randomBytes(24).toString('hex'),
         userId: bound.userId, handle: state.user!.handle, sessionDigest: sessionDigest(bound),
         createdAt: now, expiresAt: new Date(Math.min(Date.parse(now) + this.ttlMs,
           state.primaryReauth ? Date.parse(state.primaryReauth.expiresAt) : Infinity)).toISOString(),
-        secret: this.config.totp.encrypt(generated.secret),
-        recoveryCodes: this.config.totp.encrypt(JSON.stringify(plaintextCodes)),
+        secret: this.#totp.encrypt(generated.secret),
+        recoveryCodes: this.#totp.encrypt(JSON.stringify(plaintextCodes)),
         backupCodes: { ...createBackupCodeSet(bound.userId, plaintextCodes), generatedAt: now },
       };
       const record: PendingRecord = bound.mode === 'self-enrollment'
@@ -538,15 +566,18 @@ export class FileTotpEnrollmentCoordinator {
       this.checkPrimaryAuthorization(record, bound, authorized.primaryReauth);
       this.plainRecoveryCodes(record);
       if (typeof bound.token !== 'string' || !/^\d{6}$/.test(bound.token.replace(/\s/g, ''))) throw new TotpEnrollmentError('INVALID', 'Invalid TOTP code');
-      const secret = this.config.totp.decrypt(record.secret);
-      const verification = await this.config.totp.verifyTokenWithStep({ handle: record.handle, secret, createdAt: new Date(record.createdAt) }, bound.token);
+      // Deny-only: a throw refuses; the result is discarded and never accepts.
+      const denyGate = this.#beforeComplete;
+      if (denyGate) await denyGate.call(undefined, 'totp.complete');
+      const secret = this.#totp.decrypt(record.secret);
+      const verification = await this.#totp.verifyTokenWithStep({ handle: record.handle, secret, createdAt: new Date(record.createdAt) }, bound.token);
       if (!verification.valid || !Number.isSafeInteger(verification.step) || verification.step! < 0) throw new TotpEnrollmentError('INVALID', 'Invalid TOTP code');
       this.checkExpiry(record);
       const fresh = await this.current(bound, true);
       this.checkBinding(record, bound, fresh.user!.handle);
       this.checkPrimaryAuthorization(record, bound, fresh.primaryReauth);
-      const ciphertext = this.config.totp.encrypt(secret);
-      const roundTrip = Buffer.from(this.config.totp.decrypt(ciphertext));
+      const ciphertext = this.#totp.encrypt(secret);
+      const roundTrip = Buffer.from(this.#totp.decrypt(ciphertext));
       const original = Buffer.from(secret);
       if (roundTrip.length !== original.length || !timingSafeEqual(roundTrip, original)) fail('TOTP encryption round trip failed');
       const completedAt = this.now().toISOString();
@@ -668,18 +699,18 @@ export class FileTotpEnrollmentCoordinator {
 
   private async setup(record: PendingRecord): Promise<TotpEnrollmentSetup> {
     parseRecord(record);
-    const secret = this.config.totp.decrypt(record.secret);
+    const secret = this.#totp.decrypt(record.secret);
     const plaintextCodes = this.plainRecoveryCodes(record);
     text(secret);
     return {
       attemptId: record.attemptId, expiresAt: record.expiresAt, secret,
-      qrCodeUrl: await this.config.totp.generateQRCode({ handle: record.handle, secret, createdAt: new Date(record.createdAt) }),
+      qrCodeUrl: await this.#totp.generateQRCode({ handle: record.handle, secret, createdAt: new Date(record.createdAt) }),
       backupCodes: [...plaintextCodes],
     };
   }
 
   private plainRecoveryCodes(record: PendingRecord): string[] {
-    const plaintextCodes: unknown = JSON.parse(this.config.totp.decrypt(record.recoveryCodes));
+    const plaintextCodes: unknown = JSON.parse(this.#totp.decrypt(record.recoveryCodes));
     if (!Array.isArray(plaintextCodes) || plaintextCodes.length !== record.backupCodes.codes.length || plaintextCodes.some((code, index) => typeof code !== 'string' || hashBackupCode(code) !== record.backupCodes.codes[index].hash)) fail('Pending backup-code material is inconsistent');
     return plaintextCodes as string[];
   }
@@ -731,7 +762,7 @@ export class FileTotpEnrollmentCoordinator {
       // A restart with the wrong encryption key must not activate an unusable
       // factor just because its journal and digest are structurally valid.
       const factor = record.completion.totpSecret;
-      text(this.config.totp.decrypt({ encrypted: factor.encryptedSecret, iv: factor.iv, tag: factor.authTag, salt: factor.salt }));
+      text(this.#totp.decrypt({ encrypted: factor.encryptedSecret, iv: factor.iv, tag: factor.authTag, salt: factor.salt }));
       await this.config.project(copy(record.completion));
       // Only an unapplied commit may be replayed; remove its obsolete material.
       await this.writeRecord({

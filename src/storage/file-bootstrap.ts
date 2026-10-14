@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createBackupCodeSet, generateBackupCodes } from '../core/backup-codes/index.js';
-import type { TOTPService } from '../core/totp/index.js';
+import { bindTrustedTOTPService, type TOTPService, type TrustedTOTPPrimitives } from '../core/totp/index.js';
 import type { AdminUser, BackupCodeSet, EncryptedData, EncryptedTOTPSecret } from '../types/auth.js';
 import type { IStorageAdapter } from './interface.js';
 import { nowMsFor } from '../core/seams/index.js';
@@ -53,8 +53,16 @@ export interface FileBootstrapConfig {
   directory: string;
   /** Stable deployment/tenant context, authenticated inside every ciphertext. */
   scope: string;
-  /** Use the existing configured encryption key; never a development fallback. */
-  totp: Pick<TOTPService, 'generateSecret' | 'generateQRCode' | 'encrypt' | 'decrypt' | 'verifyTokenWithStep'>;
+  /**
+   * The package's own TOTPService from createTOTPService(), with the existing
+   * configured encryption key; never a development fallback. RS6: the
+   * coordinator refuses a structural look-alike, a subclass or an instance
+   * with an overridden method, and always runs the package's own secret
+   * generation, journal cipher and RFC 6238 verification. A caller can deny a
+   * completion through {@link beforeComplete}; nothing a caller supplies can
+   * make a code verify.
+   */
+  totp: TOTPService;
   /** Uncached canonical reads; these adapters must not reenter the auth gate. */
   storage: Pick<IStorageAdapter, 'getAllUsers' | 'getTOTPSecret' | 'getBackupCodes'>;
   /**
@@ -82,6 +90,17 @@ export interface FileBootstrapConfig {
    * No session issuance, destructive rollback, network I/O or gate reentry.
    */
   project(completion: BootstrapCompletion): Promise<void>;
+  /**
+   * Optional DENY-ONLY gate for a NEW completion (for example an application
+   * write-activation phase). Called under the shared gate once per new
+   * completion attempt, after committed/applied replay has returned and after
+   * the code format check, immediately before the coordinator verifies the
+   * code itself. Throw (or reject) to refuse: complete() rejects with that
+   * same error and the pending attempt is left untouched. The return value is
+   * ignored, so this hook can never accept a code. Never wraps recovery or
+   * replay. Must not re-enter the auth gate.
+   */
+  beforeComplete?(operation: 'bootstrap.complete'): void | Promise<void>;
   ttlMs?: number;
 }
 
@@ -221,15 +240,30 @@ function record(input: unknown): asserts input is RecordState {
   } else invalid();
 }
 
+function trustedTotp(value: unknown): TrustedTOTPPrimitives {
+  try { return bindTrustedTOTPService(value); } catch (error) {
+    throw new BootstrapJournalError('INVALID', (error as Error).message);
+  }
+}
+
 /** Opt-in encrypted file authority; legacy BootstrapService is unchanged. */
 export class FileBootstrapCoordinator {
   private readonly directory: string;
   private readonly filename: string;
   private readonly ttl: number;
+  /**
+   * RS6: bound once to the genuine TOTPService. Native private fields, so no
+   * later config edit, property write or hook can replace them at runtime.
+   */
+  readonly #totp: TrustedTOTPPrimitives;
+  readonly #beforeComplete: ((operation: 'bootstrap.complete') => void | Promise<void>) | undefined;
   constructor(private readonly config: FileBootstrapConfig) {
     text(config.directory, 4096); text(config.scope, 200);
     if (typeof config.withExclusiveAuth !== 'function') invalid();
     if (config.assertNamespaceAvailable !== undefined && typeof config.assertNamespaceAvailable !== 'function') invalid();
+    if (config.beforeComplete !== undefined && typeof config.beforeComplete !== 'function') invalid();
+    this.#totp = trustedTotp(config.totp);
+    this.#beforeComplete = config.beforeComplete;
     this.directory = path.resolve(config.directory);
     this.filename = path.join(this.directory, 'bootstrap.json');
     this.ttl = config.ttlMs ?? MAX_TTL;
@@ -271,7 +305,7 @@ export class FileBootstrapCoordinator {
       await this.namespaceAvailable(requested.handle);
       const createdAt = this.now().toISOString();
       const reference = randomBytes(32).toString('hex');
-      const generated = await this.config.totp.generateSecret(requested.handle);
+      const generated = await this.#totp.generateSecret(requested.handle);
       const pending: Pending = {
         state: 'pending', attemptId: randomBytes(32).toString('hex'), referenceDigest: referenceDigest(reference),
         userId: randomUUID(), handle: requested.handle, passwordHash: requested.passwordHash,
@@ -334,11 +368,14 @@ export class FileBootstrapCoordinator {
       const pending = await this.pending(reference);
       if (!pending.backupCodesAcknowledged) throw new BootstrapJournalError('INVALID', 'Confirm that the backup codes have been saved before completing setup');
       if (typeof token !== 'string' || !/^\d{6}$/.test(token)) invalid();
-      const verified = await this.config.totp.verifyTokenWithStep({ handle: pending.handle, secret: pending.secret, createdAt: new Date(pending.createdAt) }, token);
+      // Deny-only: a throw refuses; the result is discarded and never accepts.
+      const denyGate = this.#beforeComplete;
+      if (denyGate) await denyGate.call(undefined, 'bootstrap.complete');
+      const verified = await this.#totp.verifyTokenWithStep({ handle: pending.handle, secret: pending.secret, createdAt: new Date(pending.createdAt) }, token);
       if (!verified.valid || !Number.isSafeInteger(verified.step) || verified.step! < 0) invalid();
       await this.empty(pending); this.unexpired(pending);
-      const cipher = this.config.totp.encrypt(pending.secret);
-      if (this.config.totp.decrypt(cipher) !== pending.secret) invalid();
+      const cipher = this.#totp.encrypt(pending.secret);
+      if (this.#totp.decrypt(cipher) !== pending.secret) invalid();
       const completedAt = this.now().toISOString();
       const material: BootstrapCompletion = {
         version: 1, attemptId: pending.attemptId, completedAt,
@@ -395,7 +432,7 @@ export class FileBootstrapCoordinator {
     return {
       reference, attemptId: value.attemptId, handle: value.handle, expiresAt: value.expiresAt,
       secret: value.secret, backupCodes: [...value.backupCodes], backupCodesAcknowledged: value.backupCodesAcknowledged,
-      qrCodeUrl: await this.config.totp.generateQRCode({ handle: value.handle, secret: value.secret, createdAt: new Date(value.createdAt) }),
+      qrCodeUrl: await this.#totp.generateQRCode({ handle: value.handle, secret: value.secret, createdAt: new Date(value.createdAt) }),
       ...(value.profile ? { profile: copy(value.profile) } : {}),
     };
   }
@@ -439,7 +476,7 @@ export class FileBootstrapCoordinator {
   private async apply(value: Committed): Promise<void> {
     try {
       const factor = value.completion.totpSecret;
-      text(this.config.totp.decrypt({ encrypted: factor.encryptedSecret, iv: factor.iv, tag: factor.authTag, salt: factor.salt }));
+      text(this.#totp.decrypt({ encrypted: factor.encryptedSecret, iv: factor.iv, tag: factor.authTag, salt: factor.salt }));
       await this.checkProjection(value.completion, false);
       await this.config.project(copy(value.completion));
       await this.checkProjection(value.completion, true);
@@ -463,7 +500,7 @@ export class FileBootstrapCoordinator {
     object(envelope, ['version', 'encrypted']);
     if (envelope.version !== 1) invalid();
     encrypted(envelope.encrypted);
-    const authenticated: unknown = JSON.parse(this.config.totp.decrypt(envelope.encrypted));
+    const authenticated: unknown = JSON.parse(this.#totp.decrypt(envelope.encrypted));
     object(authenticated, ['domain', 'scope', 'record']);
     if (authenticated.domain !== DOMAIN || authenticated.scope !== this.config.scope) invalid();
     record(authenticated.record);
@@ -474,8 +511,8 @@ export class FileBootstrapCoordinator {
     // Domain and scope are INSIDE authenticated AES-GCM plaintext: substituting
     // another factor/journal ciphertext cannot produce a valid bootstrap record.
     const plaintext = JSON.stringify({ domain: DOMAIN, scope: this.config.scope, record: value });
-    const cipher = this.config.totp.encrypt(plaintext); encrypted(cipher);
-    if (this.config.totp.decrypt(cipher) !== plaintext) invalid();
+    const cipher = this.#totp.encrypt(plaintext); encrypted(cipher);
+    if (this.#totp.decrypt(cipher) !== plaintext) invalid();
     const serialized = JSON.stringify({ version: 1, encrypted: cipher });
     if (Buffer.byteLength(serialized) > MAX_BYTES) invalid();
     const firstCreated = await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });

@@ -35,6 +35,23 @@ const KEY_LENGTH = 32;
 // 32 Base32 chars = 160 bits = 20 bytes.
 const DUMMY_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
 
+/**
+ * Instances built by this module's own constructor (RS6). Module-private: no
+ * caller can add an object to it, so a structural look-alike is never genuine.
+ */
+const genuineServices = new WeakSet<object>();
+
+/**
+ * The absolute TOTP time-step for the current wall-clock time. A token minted
+ * for time-step N is `Math.floor(now / period)`; comparing consumed steps
+ * across verifications gives us a monotonic single-use marker. A module
+ * function, not a method, so no subclass or instance patch can move it.
+ */
+function currentStepFor(service: object): number {
+  const stepSeconds = getAuthenticatorStep();
+  return Math.floor(nowMsFor(service) / 1000 / stepSeconds);
+}
+
 export interface TOTPServiceConfig {
   encryptionKey: string;
 
@@ -56,6 +73,7 @@ export class TOTPService {
   constructor(config: TOTPServiceConfig) {
     this.encryptionKey = config.encryptionKey;
     this.issuer = config.issuer;
+    genuineServices.add(this);
   }
 
   async generateSecret(handle: string, email?: string): Promise<TOTPSecret> {
@@ -134,16 +152,6 @@ export class TOTPService {
   }
 
   /**
-   * The absolute TOTP time-step for the current wall-clock time. A token minted
-   * for time-step N is `Math.floor(now / period)`; comparing consumed steps
-   * across verifications gives us a monotonic single-use marker.
-   */
-  private currentStep(): number {
-    const stepSeconds = getAuthenticatorStep();
-    return Math.floor(nowMsFor(this) / 1000 / stepSeconds);
-  }
-
-  /**
    * Replay-resistant token verification.
    *
    * Unlike {@link verifyToken}, this enforces single-use of a code across the
@@ -187,7 +195,7 @@ export class TOTPService {
         return false;
       }
 
-      const step = this.currentStep() + delta;
+      const step = currentStepFor(this) + delta;
       if (lastUsedStep !== undefined && step <= lastUsedStep) {
         // Code is cryptographically valid but was already consumed (or is
         // older than the last consumed step): reject as a replay.
@@ -222,6 +230,81 @@ export class TOTPService {
     const json = this.decrypt(encryptedData);
     return JSON.parse(json);
   }
+}
+
+/**
+ * The methods an authority coordinator may call, captured from the class at
+ * module evaluation, before any importer runs. A later patch of
+ * `TOTPService.prototype` or of an instance is never called through them.
+ */
+const intrinsic = Object.freeze({
+  generateSecret: TOTPService.prototype.generateSecret,
+  generateQRCode: TOTPService.prototype.generateQRCode,
+  encrypt: TOTPService.prototype.encrypt,
+  decrypt: TOTPService.prototype.decrypt,
+  verifyTokenWithStep: TOTPService.prototype.verifyTokenWithStep,
+});
+
+/** The TOTP primitives a durable authority coordinator runs, bound to one genuine service. */
+export interface TrustedTOTPPrimitives {
+  generateSecret(handle: string, email?: string): Promise<TOTPSecret>;
+  generateQRCode(secret: TOTPSecret): Promise<string>;
+  encrypt(text: string): EncryptedData;
+  decrypt(encryptedData: EncryptedData): string;
+  verifyTokenWithStep(
+    secretOrNull: TOTPSecret | null,
+    token: string,
+    lastUsedStep?: number,
+  ): Promise<{ valid: boolean; step?: number }>;
+}
+
+/**
+ * RS6 (internal, not re-exported from any package entry): accept only a
+ * TOTPService made by this module's constructor, with no subclass and no
+ * instance override of an authority method, and bind the captured class
+ * methods to it. The returned primitives never call a caller-supplied method,
+ * so no configuration can make a code verify, pin the enrolment secret or
+ * substitute the journal cipher. Throws a TypeError otherwise.
+ */
+export function bindTrustedTOTPService(value: unknown): TrustedTOTPPrimitives {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !genuineServices.has(value) ||
+    Object.getPrototypeOf(value) !== TOTPService.prototype
+  ) {
+    throw new TypeError(
+      "Authority coordinators require a TOTPService from createTOTPService(); custom or wrapped TOTP implementations are refused (RS6)",
+    );
+  }
+  for (const name of Object.keys(intrinsic)) {
+    if (Object.prototype.hasOwnProperty.call(value, name)) {
+      throw new TypeError(
+        `Authority coordinators refuse a TOTPService whose ${name} is overridden (RS6)`,
+      );
+    }
+  }
+  const service = value as TOTPService;
+  return Object.freeze({
+    generateSecret: (handle: string, email?: string) =>
+      intrinsic.generateSecret.call(service, handle, email),
+    generateQRCode: (secret: TOTPSecret) =>
+      intrinsic.generateQRCode.call(service, secret),
+    encrypt: (text: string) => intrinsic.encrypt.call(service, text),
+    decrypt: (encryptedData: EncryptedData) =>
+      intrinsic.decrypt.call(service, encryptedData),
+    verifyTokenWithStep: (
+      secretOrNull: TOTPSecret | null,
+      token: string,
+      lastUsedStep?: number,
+    ) =>
+      intrinsic.verifyTokenWithStep.call(
+        service,
+        secretOrNull,
+        token,
+        lastUsedStep,
+      ),
+  });
 }
 
 export function createTOTPService(config: TOTPConfig): TOTPService {

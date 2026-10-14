@@ -1,10 +1,12 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installSeams } from '../src/core/seams/index.js';
 import { hashBackupCode } from '../src/core/backup-codes/index.js';
+import { TOTPService } from '../src/core/totp/index.js';
+import { generateAuthenticatorToken } from '../src/totp/otplib-compat.js';
 import {
   FileTotpEnrollmentCoordinator,
   type FileTotpEnrollmentConfig,
@@ -15,11 +17,22 @@ import {
   type TotpEnrollmentRequest,
   type PrimaryReauthAuthorization,
 } from '../src/storage/file-totp-enrollment.js';
-import type { AdminUser, EncryptedData, TOTPSecret } from '../src/types/auth.js';
+import type { AdminUser, EncryptedData } from '../src/types/auth.js';
 
 const START = Date.parse('2026-09-19T12:00:00.000Z');
-const TOKEN = '385729';
-const VERIFIED_STEP = 59_660_401;
+// RS6: no stubbed TOTP. The coordinator runs the package's own secret
+// generation, cipher and RFC 6238 verification; tests compute real codes for
+// the test clock installed through the NODE_ENV=test seam registry.
+const VERIFIED_STEP = Math.floor(START / 30_000);
+const tokenAt = (secret: string, ms: number) => generateAuthenticatorToken(secret, Math.floor(ms / 1000));
+/** A 6-digit code that matches none of the accepted window steps at `ms`. */
+function wrongTokenAt(secret: string, ms: number): string {
+  const window = new Set([-30_000, 0, 30_000].map((offset) => tokenAt(secret, ms + offset)));
+  for (let n = 0; ; n++) {
+    const candidate = String(n).padStart(6, '0');
+    if (!window.has(candidate)) return candidate;
+  }
+}
 const ownedDirectories: string[] = [];
 
 function copy<T>(value: T): T {
@@ -78,49 +91,20 @@ async function fixture() {
     backupCodes: null,
   };
 
-  // Fast authenticated encryption keeps these storage tests independent of
-  // production scrypt/TOTP timing. Primitive compatibility has its own tests.
-  const encryptionKey = randomBytes(32);
-  const totp = {
-    generateSecret: vi.fn(async (handle: string): Promise<TOTPSecret> => ({
-      handle,
-      secret: `TEST-SECRET-${randomBytes(24).toString('hex')}`,
-      createdAt: new Date(clock),
-    })),
-    generateQRCode: vi.fn(async (secret: TOTPSecret) => `data:test-qr,${secret.handle}:${secret.secret}`),
-    encrypt: vi.fn((plaintext: string): EncryptedData => {
-      const iv = randomBytes(12);
-      const salt = randomBytes(16);
-      const cipher = createCipheriv('aes-256-gcm', encryptionKey, iv);
-      cipher.setAAD(salt);
-      const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
-      return {
-        encrypted: encrypted.toString('base64'),
-        iv: iv.toString('base64'),
-        salt: salt.toString('base64'),
-        tag: cipher.getAuthTag().toString('base64'),
-      };
-    }),
-    decrypt: vi.fn((value: EncryptedData): string => {
-      const decipher = createDecipheriv('aes-256-gcm', encryptionKey, Buffer.from(value.iv, 'base64'));
-      decipher.setAAD(Buffer.from(value.salt, 'base64'));
-      decipher.setAuthTag(Buffer.from(value.tag, 'base64'));
-      return Buffer.concat([
-        decipher.update(Buffer.from(value.encrypted, 'base64')),
-        decipher.final(),
-      ]).toString('utf8');
-    }),
-    verifyTokenWithStep: vi.fn(async (_secret: TOTPSecret | null, token: string): Promise<{ valid: boolean; step?: number }> => (
-      token.replace(/\s/g, '') === TOKEN ? { valid: true, step: VERIFIED_STEP } : { valid: false }
-    )),
-  } satisfies FileTotpEnrollmentConfig['totp'];
+  const totp = new TOTPService({ encryptionKey: randomBytes(32).toString('base64'), issuer: 'Enrollment Test' });
+  // The real service reads the same test clock as the coordinators.
+  installSeams(totp, { clock: { now: () => clock } });
+  // Deny-only gate: observes each NEW completion right before the coordinator
+  // verifies the code itself; tests also use it to inject races at that point.
+  const completionGate = vi.fn(async (_operation: 'totp.complete'): Promise<void> => undefined);
 
-  const loadCurrent = vi.fn(async (requested: TotpEnrollmentBinding): Promise<TotpEnrollmentCurrentState> => ({
+  const readCurrent = async (requested: TotpEnrollmentBinding): Promise<TotpEnrollmentCurrentState> => ({
     user: state.user?.id === requested.userId ? copy(state.user) : null,
     session: state.session?.id === requested.sessionId ? copy(state.session) : null,
     totpSecret: copy(state.totpSecret),
     backupCodes: copy(state.backupCodes),
-  }));
+  });
+  const loadCurrent = vi.fn(readCurrent);
   const applyProjection = async (completion: TotpEnrollmentCompletion): Promise<void> => {
     state.totpSecret = copy(completion.totpSecret);
     state.backupCodes = copy(completion.backupCodes);
@@ -132,6 +116,7 @@ async function fixture() {
     totp,
     loadCurrent,
     project,
+    beforeComplete: completionGate,
     ttlMs: 60_000,
   };
   const clocked = <T extends object>(service: T): T => {
@@ -141,12 +126,15 @@ async function fixture() {
   const coordinator = clocked(new FileTotpEnrollmentCoordinator(config));
   const filename = path.join(directory, `${createHash('sha256').update(binding.userId).digest('hex')}.json`);
   return {
-    directory, filename, binding, state, totp, project, loadCurrent, applyProjection, coordinator,
+    directory, filename, binding, state, totp, project, loadCurrent, readCurrent, applyProjection, coordinator, completionGate,
+    /** The valid code for this setup at the current (or given) test time. */
+    tokenFor: (setup: TotpEnrollmentSetup, at = clock) => tokenAt(setup.secret, at),
+    wrongTokenFor: (setup: TotpEnrollmentSetup, at = clock) => wrongTokenAt(setup.secret, at),
     fresh: (overrides: Partial<FileTotpEnrollmentConfig> = {}) => clocked(new FileTotpEnrollmentCoordinator({ ...config, ...overrides })),
     setTime: (milliseconds: number) => { clock = milliseconds; },
     readRecord: async <T = Record<string, unknown>>(): Promise<T> => JSON.parse(await fs.readFile(filename, 'utf8')) as T,
     writeRecord: async (value: unknown) => fs.writeFile(filename, JSON.stringify(value), 'utf8'),
-    complete: (setup: TotpEnrollmentSetup, token = TOKEN) => coordinator.complete({ ...binding, attemptId: setup.attemptId, token }),
+    complete: (setup: TotpEnrollmentSetup, token?: string) => coordinator.complete({ ...binding, attemptId: setup.attemptId, token: token ?? tokenAt(setup.secret, clock) }),
   };
 }
 
@@ -154,7 +142,6 @@ function expectNoPlaintext(raw: string, setup: TotpEnrollmentSetup, binding: Tot
   expect(raw).not.toContain(setup.secret);
   expect(raw).not.toContain(setup.qrCodeUrl);
   expect(raw).not.toContain(binding.sessionId);
-  expect(raw).not.toContain(`"${TOKEN}"`);
   expect(raw).not.toContain('"token"');
   for (const code of setup.backupCodes) expect(raw).not.toContain(code);
 }
@@ -181,7 +168,7 @@ async function selfFixture() {
   return {
     ...f, binding, authorization, resolver, coordinator, fresh,
     begin: () => coordinator.begin(binding),
-    complete: (setup: TotpEnrollmentSetup) => coordinator.complete({ ...binding, attemptId: setup.attemptId, token: TOKEN }),
+    complete: (setup: TotpEnrollmentSetup) => coordinator.complete({ ...binding, attemptId: setup.attemptId, token: f.tokenFor(setup) }),
   };
 }
 
@@ -200,7 +187,7 @@ describe('FileTotpEnrollmentCoordinator self-enrollment v2', () => {
     await expect(f.coordinator.begin({ ...f.binding, primaryReauthRef: 'browser-invented-proof' })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     f.resolver.mockRejectedValueOnce(new Error('private resolver details'));
     await expect(f.begin()).rejects.toMatchObject({ code: 'UNAUTHORIZED', message: 'Current primary reauthentication is required' });
-    expect(f.totp.generateSecret).not.toHaveBeenCalled();
+    await expect(fs.access(f.filename)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(f.project).not.toHaveBeenCalled();
   });
 
@@ -217,7 +204,7 @@ describe('FileTotpEnrollmentCoordinator self-enrollment v2', () => {
     const f = await selfFixture();
     Object.assign(f.authorization, patch);
     await expect(f.begin()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
-    expect(f.totp.generateSecret).not.toHaveBeenCalled();
+    await expect(fs.access(f.filename)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(f.project).not.toHaveBeenCalled();
   });
 
@@ -260,7 +247,7 @@ describe('FileTotpEnrollmentCoordinator self-enrollment v2', () => {
     const setup = await f.begin();
     f.state.user!.githubId = 43;
     await expect(f.complete(setup)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
-    expect(f.totp.verifyTokenWithStep).not.toHaveBeenCalled();
+    expect(f.completionGate).not.toHaveBeenCalled();
     f.state.user!.githubId = 42;
     await expect(f.complete(setup)).resolves.toMatchObject({ version: 2, mode: 'self-enrollment' });
   });
@@ -273,16 +260,17 @@ describe('FileTotpEnrollmentCoordinator self-enrollment v2', () => {
     });
     await expect(resolverRace.begin()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     const qrRace = await selfFixture();
-    qrRace.totp.generateQRCode.mockImplementationOnce(async () => {
-      qrRace.state.session = null;
-      return 'data:fixture-qr';
-    });
+    qrRace.loadCurrent
+      .mockImplementationOnce(qrRace.readCurrent)
+      .mockImplementationOnce(async (requested) => {
+        qrRace.state.session = null;
+        return qrRace.readCurrent(requested);
+      });
     await expect(qrRace.begin()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     const factorRace = await selfFixture();
     const setup = await factorRace.begin();
-    factorRace.totp.verifyTokenWithStep.mockImplementationOnce(async () => {
+    factorRace.completionGate.mockImplementationOnce(async () => {
       factorRace.state.user!.passwordHash = 'reset-between-factors';
-      return { valid: true, step: VERIFIED_STEP };
     });
     await expect(factorRace.complete(setup)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect(factorRace.project).not.toHaveBeenCalled();
@@ -294,7 +282,7 @@ describe('FileTotpEnrollmentCoordinator self-enrollment v2', () => {
     const setup = await f.begin();
     f.state.user!.passwordHash = 'changed-current-credential';
     await expect(f.complete(setup)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
-    expect(f.totp.verifyTokenWithStep).not.toHaveBeenCalled();
+    expect(f.completionGate).not.toHaveBeenCalled();
     const expired = await selfFixture();
     const expiredSetup = await expired.begin();
     expired.setTime(Date.parse(expired.authorization.expiresAt));
@@ -335,7 +323,7 @@ describe('FileTotpEnrollmentCoordinator self-enrollment v2', () => {
     if (caseName === 'removed user') Object.assign(f.state.user!, { removedAt: null });
     if (caseName === 'revoked session') f.state.session = null;
     await expect(f.begin()).rejects.toBeDefined();
-    expect(f.totp.generateSecret).not.toHaveBeenCalled();
+    await expect(fs.access(f.filename)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(f.project).not.toHaveBeenCalled();
   });
 
@@ -345,13 +333,13 @@ describe('FileTotpEnrollmentCoordinator self-enrollment v2', () => {
     f.state.user!.needsOnboarding = true;
     f.state.session!.user!.needsOnboarding = true;
     const onboarding = { userId: f.binding.userId, sessionId: f.binding.sessionId };
-    await expect(f.coordinator.complete({ ...onboarding, attemptId: setup.attemptId, token: TOKEN })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(f.coordinator.complete({ ...onboarding, attemptId: setup.attemptId, token: f.tokenFor(setup) })).rejects.toMatchObject({ code: 'CONFLICT' });
     await expect(f.coordinator.begin(onboarding)).rejects.toMatchObject({ code: 'CONFLICT' });
     const legacy = await fixture();
     const legacySetup = await legacy.coordinator.begin(legacy.binding);
     legacy.state.user!.needsOnboarding = false;
     legacy.state.session!.user!.needsOnboarding = false;
-    await expect(legacy.coordinator.complete({ ...legacy.binding, mode: 'self-enrollment', primaryReauthRef: 'opaque', attemptId: legacySetup.attemptId, token: TOKEN }))
+    await expect(legacy.coordinator.complete({ ...legacy.binding, mode: 'self-enrollment', primaryReauthRef: 'opaque', attemptId: legacySetup.attemptId, token: legacy.tokenFor(legacySetup) }))
       .rejects.toMatchObject({ code: 'CONFLICT' });
   });
 
@@ -367,12 +355,12 @@ describe('FileTotpEnrollmentCoordinator self-enrollment v2', () => {
     f.state.session = null;
     f.setTime(Date.parse(f.authorization.expiresAt) + 1);
     const noProof = f.fresh({ validatePrimaryReauthentication: undefined });
-    await expect(noProof.complete({ ...f.binding, attemptId: setup.attemptId, token: TOKEN })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(noProof.complete({ ...f.binding, attemptId: setup.attemptId, token: f.tokenFor(setup) })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect((await f.readRecord()).state).toBe('applied');
     expect(f.project.mock.calls[1][0]).toEqual(committed.completion);
     expect(f.state.user!.needsOnboarding).toBe(false);
     expect(f.state.backupCodes).toEqual(committed.completion.backupCodes);
-    expect(f.totp.verifyTokenWithStep).toHaveBeenCalledTimes(1);
+    expect(f.completionGate).toHaveBeenCalledTimes(1);
   });
 
   it('returns only an idempotent receipt to the same current owner/session after proof expiry without replaying spent material', async () => {
@@ -381,11 +369,11 @@ describe('FileTotpEnrollmentCoordinator self-enrollment v2', () => {
     const receipt = await f.complete(setup);
     f.state.backupCodes!.codes[0].used = true;
     f.setTime(Date.parse(f.authorization.expiresAt) + 1);
-    await expect(f.fresh({ validatePrimaryReauthentication: undefined }).complete({ ...f.binding, attemptId: setup.attemptId, token: TOKEN })).resolves.toEqual(receipt);
+    await expect(f.fresh({ validatePrimaryReauthentication: undefined }).complete({ ...f.binding, attemptId: setup.attemptId, token: f.tokenFor(setup) })).resolves.toEqual(receipt);
     expect(f.state.backupCodes!.codes[0].used).toBe(true);
     expect(f.project).toHaveBeenCalledTimes(1);
     f.state.session!.id = 'different-session';
-    await expect(f.fresh().complete({ ...f.binding, sessionId: 'different-session', attemptId: setup.attemptId, token: TOKEN })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(f.fresh().complete({ ...f.binding, sessionId: 'different-session', attemptId: setup.attemptId, token: f.tokenFor(setup) })).rejects.toMatchObject({ code: 'CONFLICT' });
   });
 
   it('keeps recovery closed if the projection detects a conflicting factor', async () => {
@@ -476,7 +464,6 @@ describe('FileTotpEnrollmentCoordinator pending custody', () => {
     const resumed = await f.fresh().begin(f.binding);
 
     expect(resumed).toEqual(first);
-    expect(f.totp.generateSecret).toHaveBeenCalledTimes(1);
     expect(first.attemptId).toMatch(/^[a-f0-9]{48}$/);
     expect(first.backupCodes).toHaveLength(10);
     expect(f.project).not.toHaveBeenCalled();
@@ -491,7 +478,7 @@ describe('FileTotpEnrollmentCoordinator pending custody', () => {
     const other = { userId: 'another-user', sessionId: f.binding.sessionId };
 
     await expect(f.coordinator.begin(other)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
-    await expect(f.coordinator.complete({ ...other, attemptId: setup.attemptId, token: TOKEN })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(f.coordinator.complete({ ...other, attemptId: setup.attemptId, token: f.tokenFor(setup) })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect(f.project).not.toHaveBeenCalled();
   });
 
@@ -502,7 +489,7 @@ describe('FileTotpEnrollmentCoordinator pending custody', () => {
     const other = { ...f.binding, sessionId: f.state.session!.id };
 
     await expect(f.coordinator.begin(other)).rejects.toMatchObject({ code: 'CONFLICT' });
-    await expect(f.coordinator.complete({ ...other, attemptId: setup.attemptId, token: TOKEN })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(f.coordinator.complete({ ...other, attemptId: setup.attemptId, token: f.tokenFor(setup) })).rejects.toMatchObject({ code: 'CONFLICT' });
     expect(f.project).not.toHaveBeenCalled();
   });
 
@@ -510,7 +497,7 @@ describe('FileTotpEnrollmentCoordinator pending custody', () => {
     const f = await fixture();
     const setup = await f.coordinator.begin(f.binding);
 
-    await expect(f.coordinator.complete({ ...f.binding, attemptId: 'a'.repeat(48), token: TOKEN })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(f.coordinator.complete({ ...f.binding, attemptId: 'a'.repeat(48), token: f.tokenFor(setup) })).rejects.toMatchObject({ code: 'CONFLICT' });
     expect(await f.coordinator.begin(f.binding)).toEqual(setup);
     expect(f.project).not.toHaveBeenCalled();
   });
@@ -534,12 +521,12 @@ describe('FileTotpEnrollmentCoordinator pending custody', () => {
     const setup = await f.coordinator.begin(f.binding);
     const entered = deferred();
     const release = deferred();
-    f.totp.verifyTokenWithStep.mockImplementationOnce(async () => {
+    f.completionGate.mockImplementationOnce(async () => {
       entered.resolve();
       await release.promise;
-      return { valid: true, step: VERIFIED_STEP };
     });
-    const completion = f.complete(setup);
+    // The code is genuinely valid at the deadline the clock moves to.
+    const completion = f.complete(setup, f.tokenFor(setup, Date.parse(setup.expiresAt)));
     const rejected = expect(completion).rejects.toMatchObject({ code: 'EXPIRED' });
     await entered.promise;
     f.setTime(Date.parse(setup.expiresAt));
@@ -553,24 +540,27 @@ describe('FileTotpEnrollmentCoordinator pending custody', () => {
   it('does not return expired material when resumed QR generation crosses the deadline', async () => {
     const f = await fixture();
     const setup = await f.coordinator.begin(f.binding);
-    f.totp.generateQRCode.mockImplementationOnce(async () => {
-      f.setTime(Date.parse(setup.expiresAt));
-      return 'data:test-qr,expired';
-    });
+    f.loadCurrent
+      .mockImplementationOnce(f.readCurrent)
+      .mockImplementationOnce(async (requested) => {
+        f.setTime(Date.parse(setup.expiresAt));
+        return f.readCurrent(requested);
+      });
 
     await expect(f.fresh().begin(f.binding)).rejects.toMatchObject({ code: 'EXPIRED' });
     expect((await f.readRecord()).attemptId).toBe(setup.attemptId);
-    expect(f.totp.generateSecret).toHaveBeenCalledTimes(1);
     expect(f.project).not.toHaveBeenCalled();
   });
 
   it('rechecks session authority after resumed QR generation', async () => {
     const f = await fixture();
     await f.coordinator.begin(f.binding);
-    f.totp.generateQRCode.mockImplementationOnce(async () => {
-      f.state.session!.expires = new Date(START).toISOString();
-      return 'data:test-qr,session-expired';
-    });
+    f.loadCurrent
+      .mockImplementationOnce(f.readCurrent)
+      .mockImplementationOnce(async (requested) => {
+        f.state.session!.expires = new Date(START).toISOString();
+        return f.readCurrent(requested);
+      });
 
     await expect(f.fresh().begin(f.binding)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect(f.project).not.toHaveBeenCalled();
@@ -595,13 +585,31 @@ describe('FileTotpEnrollmentCoordinator pending custody', () => {
     expect(f.project).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, -1, 1.5, Number.NaN])('requires a valid consumed TOTP step, not just valid=true (%s)', async (step) => {
+  it('never consults a verifier patched onto the service after construction', async () => {
     const f = await fixture();
     const setup = await f.coordinator.begin(f.binding);
-    f.totp.verifyTokenWithStep.mockResolvedValueOnce({ valid: true, step });
+    Object.defineProperty(f.totp, 'verifyTokenWithStep', { value: async () => ({ valid: true, step: 1 }), configurable: true });
+    vi.spyOn(TOTPService.prototype, 'verifyTokenWithStep').mockResolvedValue({ valid: true, step: 1 });
+    const real = f.tokenFor(setup);
 
-    await expect(f.complete(setup)).rejects.toMatchObject({ code: 'INVALID' });
+    await expect(f.complete(setup, f.wrongTokenFor(setup))).rejects.toMatchObject({ code: 'INVALID' });
+    expect((await f.readRecord()).state).toBe('pending');
     expect(f.project).not.toHaveBeenCalled();
+    await expect(f.complete(setup, real)).resolves.toMatchObject({ attemptId: setup.attemptId });
+  });
+
+  it('lets beforeComplete deny but never accept', async () => {
+    const f = await fixture();
+    const setup = await f.coordinator.begin(f.binding);
+    f.completionGate.mockImplementationOnce(async () => ({ valid: true, step: 1 }) as never);
+    await expect(f.complete(setup, f.wrongTokenFor(setup))).rejects.toMatchObject({ code: 'INVALID' });
+    const closed = Object.assign(new Error('authority writes are paused'), { status: 503 });
+    f.completionGate.mockRejectedValueOnce(closed);
+    await expect(f.complete(setup)).rejects.toBe(closed);
+    expect(f.completionGate).toHaveBeenLastCalledWith('totp.complete');
+    expect((await f.readRecord()).state).toBe('pending');
+    expect(f.project).not.toHaveBeenCalled();
+    await expect(f.complete(setup)).resolves.toMatchObject({ attemptId: setup.attemptId });
   });
 
   it.each([
@@ -641,9 +649,8 @@ describe('FileTotpEnrollmentCoordinator pending custody', () => {
   it('rechecks current authority after asynchronous TOTP verification', async () => {
     const f = await fixture();
     const setup = await f.coordinator.begin(f.binding);
-    f.totp.verifyTokenWithStep.mockImplementationOnce(async () => {
+    f.completionGate.mockImplementationOnce(async () => {
       f.state.user!.isActive = false;
-      return { valid: true, step: VERIFIED_STEP };
     });
 
     await expect(f.complete(setup)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
@@ -729,7 +736,7 @@ describe('FileTotpEnrollmentCoordinator commit and recovery', () => {
     expect(f.project).toHaveBeenCalledTimes(2);
     expect(f.project.mock.calls[1][0]).toEqual(committed.completion);
     expect((await f.readRecord()).state).toBe('applied');
-    expect(f.totp.verifyTokenWithStep).toHaveBeenCalledTimes(1);
+    expect(f.completionGate).toHaveBeenCalledTimes(1);
   });
 
   it('keeps guarded reads and writes closed across repeated projection failures until recovery succeeds', async () => {
@@ -834,7 +841,7 @@ describe('FileTotpEnrollmentCoordinator commit and recovery', () => {
     await expect(f.complete(setup)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
     const protectedOperation = vi.fn(async () => 'protected');
     const wrongKey = f.fresh({
-      totp: { ...f.totp, decrypt: () => { throw new Error('key unavailable or changed'); } },
+      totp: new TOTPService({ encryptionKey: randomBytes(32).toString('base64'), issuer: 'Enrollment Test' }),
     });
 
     await expect(wrongKey.withReadyAuth(protectedOperation)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
@@ -860,12 +867,12 @@ describe('FileTotpEnrollmentCoordinator commit and recovery', () => {
     const fresh = f.fresh();
 
     await fresh.recover();
-    await expect(fresh.complete({ ...f.binding, attemptId: setup.attemptId, token: TOKEN })).resolves.toEqual(receipt);
+    await expect(fresh.complete({ ...f.binding, attemptId: setup.attemptId, token: f.tokenFor(setup) })).resolves.toEqual(receipt);
     await expect(f.complete(setup)).resolves.toEqual(receipt);
 
     expect(f.state).toEqual(laterState);
     expect(f.project).toHaveBeenCalledTimes(1);
-    expect(f.totp.verifyTokenWithStep).toHaveBeenCalledTimes(1);
+    expect(f.completionGate).toHaveBeenCalledTimes(1);
   });
 
   it('does not return an applied receipt to a different session or deactivated user', async () => {
@@ -874,7 +881,7 @@ describe('FileTotpEnrollmentCoordinator commit and recovery', () => {
     await f.complete(setup);
     f.state.session!.id = 'session:other';
 
-    await expect(f.coordinator.complete({ ...f.binding, sessionId: f.state.session!.id, attemptId: setup.attemptId, token: TOKEN })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(f.coordinator.complete({ ...f.binding, sessionId: f.state.session!.id, attemptId: setup.attemptId, token: f.tokenFor(setup) })).rejects.toMatchObject({ code: 'CONFLICT' });
     f.state.session!.id = f.binding.sessionId;
     f.state.user!.isActive = false;
     await expect(f.complete(setup)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
@@ -891,9 +898,8 @@ describe('FileTotpEnrollmentCoordinator serialization and fail-closed storage', 
     ]);
     expect(setups[1]).toEqual(setups[0]);
     expect(setups[2]).toEqual(setups[0]);
-    expect(f.totp.generateSecret).toHaveBeenCalledTimes(1);
 
-    const input = { ...f.binding, attemptId: setups[0].attemptId, token: TOKEN };
+    const input = { ...f.binding, attemptId: setups[0].attemptId, token: f.tokenFor(setups[0]) };
     const receipts = await Promise.all([
       f.coordinator.complete(input), peer.complete(input), f.coordinator.complete(input),
     ]);
@@ -901,7 +907,7 @@ describe('FileTotpEnrollmentCoordinator serialization and fail-closed storage', 
     expect(receipts[1]).toEqual(receipts[0]);
     expect(receipts[2]).toEqual(receipts[0]);
     expect(f.project).toHaveBeenCalledTimes(1);
-    expect(f.totp.verifyTokenWithStep).toHaveBeenCalledTimes(1);
+    expect(f.completionGate).toHaveBeenCalledTimes(1);
   });
 
   it('permits awaited nested gates and enrollment without deadlocking', async () => {
@@ -986,14 +992,13 @@ describe('FileTotpEnrollmentCoordinator serialization and fail-closed storage', 
       if (outcome.status === 'fulfilled') expect(outcome.value).toEqual(fulfilled[0].value);
       else expect(outcome.reason).toMatchObject({ name: 'TotpEnrollmentError' });
     }
-    expect(f.totp.generateSecret).toHaveBeenCalledTimes(1);
     expect(await f.coordinator.begin(f.binding)).toEqual(fulfilled[0].value);
   });
 
   it('does not verify or project twice from concurrent nested completions', async () => {
     const f = await fixture();
     const setup = await f.coordinator.begin(f.binding);
-    const input = { ...f.binding, attemptId: setup.attemptId, token: TOKEN };
+    const input = { ...f.binding, attemptId: setup.attemptId, token: f.tokenFor(setup) };
 
     const outcomes = await f.coordinator.withReadyAuth(() => Promise.allSettled([
       f.coordinator.complete(input), f.fresh().complete(input),
@@ -1004,7 +1009,7 @@ describe('FileTotpEnrollmentCoordinator serialization and fail-closed storage', 
       if (outcome.status === 'fulfilled') expect(outcome.value).toEqual(fulfilled[0].value);
       else expect(outcome.reason).toMatchObject({ name: 'TotpEnrollmentError' });
     }
-    expect(f.totp.verifyTokenWithStep).toHaveBeenCalledTimes(1);
+    expect(f.completionGate).toHaveBeenCalledTimes(1);
     expect(f.project).toHaveBeenCalledTimes(1);
   });
 

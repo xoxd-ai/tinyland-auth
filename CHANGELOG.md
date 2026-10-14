@@ -55,11 +55,35 @@ removed or renamed.
   internal seam clock (`src/core/seams`), which only the `NODE_ENV=test`
   testing build can install, exactly like 1.0.0's `TOTPService` and
   `SessionManager`. Production code always uses system time.
-- The coordinators' `totp` option is the application's own `TOTPService`
-  (or a wrapper that delegates to it, for example to gate verification on
-  write activation). It carries the encryption custody the application
-  already holds; it is not a fixed-code bypass, and 1.0.0's
-  `TOTPServiceConfig` keeps no verifier option.
+- **No injectable TOTP verifier (RS6/RP2).** `FileBootstrapCoordinator` and
+  `FileTotpEnrollmentCoordinator` take `totp: TOTPService`, and the
+  constructor accepts only an instance made by the package's own
+  `TOTPService` constructor (`createTOTPService`): a structural look-alike,
+  a wrapper object, a subclass, a re-prototyped instance or an instance with
+  an own `generateSecret`, `generateQRCode`, `encrypt`, `decrypt` or
+  `verifyTokenWithStep` is refused with `INVALID`. The coordinators then call
+  the class methods captured when the module loaded, so a later patch of the
+  instance, of `TOTPService.prototype` or of the config object is never
+  called. The enrolment secret, the journal cipher and the RFC 6238 check are
+  always the package's own; no caller can make a code verify or pin a seed.
+  The candidate's structural `Pick<TOTPService, ...>` option (which let
+  `verifyTokenWithStep: async () => ({ valid: true })` mint the first
+  `super_admin`) is not released.
+- **`beforeComplete` deny-only gate.** Both coordinators take an optional
+  `beforeComplete(operation)` (`'bootstrap.complete'` or `'totp.complete'`),
+  awaited under the gate once per NEW completion, after committed/applied
+  replay has returned and immediately before the coordinator verifies the
+  code. A throw or rejection refuses with that same error and leaves the
+  pending attempt untouched; the return value is ignored, so it cannot accept
+  a code. This replaces the candidate's delegating `totp` wrapper used to hold
+  completions behind an application write-activation phase.
+  **Consumer migration** (Mothership `authorityCompletionTotp`): pass the
+  `TOTPService` itself as `totp` and the activation check as
+  `beforeComplete: (operation) => requireAuthorityWriteActivation(operation)`.
+- `tests/production-artifact.test.ts` and `//:totp_authority_artifact_test`
+  prove this on the built package under `NODE_ENV` production, unset and
+  development: every refused shape throws, patched verifiers are ignored, a
+  wrong code mints no user, and the genuine code still completes.
 
 ### Release surface
 

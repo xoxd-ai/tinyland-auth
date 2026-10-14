@@ -65,6 +65,7 @@ vitest_bin.vitest_test(
         "scripts/check-package-artifact.mjs",
         "scripts/check-production-artifact.mjs",
         "scripts/check-release-metadata.mjs",
+        "scripts/check-totp-authority.mjs",
         "scripts/ci-bazel-test.sh",
         "scripts/pack-and-check-production-artifact.mjs",
         ".gitignore",
@@ -153,6 +154,26 @@ js_test(
     ],
     entry_point = "scripts/check-production-artifact.mjs",
     timeout = "moderate",
+)
+
+# RS6 / RP2 runtime proof on the delivered //:pkg: the ./storage first-admin
+# and enrollment coordinators refuse every non-genuine TOTPService shape,
+# never call a verifier patched in after construction, keep beforeComplete
+# deny-only, and mint super_admin only for the genuine code, in plain Node under
+# NODE_ENV production, unset and development.
+js_test(
+    name = "totp_authority_artifact_test",
+    args = ["$(rootpath :pkg)"],
+    chdir = package_name(),
+    data = [
+        "scripts/check-totp-authority.mjs",
+        ":node_modules/bcryptjs",
+        ":node_modules/nanoid",
+        ":node_modules/otplib",
+        ":node_modules/qrcode",
+        ":pkg",
+    ],
+    entry_point = "scripts/check-totp-authority.mjs",
 )
 
 # TIN-4435/AP3: the three qualification targets the tinyland.dev candidate-image

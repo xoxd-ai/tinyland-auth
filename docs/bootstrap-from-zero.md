@@ -513,6 +513,17 @@ With no journal, `recover()` performs no writes, including no directory creation
 Configure `directory`, a stable deployment/tenant `scope`, the existing
 configured `TOTPService`, raw `storage` reads (`getAllUsers`, `getTOTPSecret`,
 `getBackupCodes`), `withExclusiveAuth`, and an idempotent `project` callback.
+
+RS6: `totp` must be the instance `createTOTPService()` returned. The
+constructor refuses a look-alike object, a delegating wrapper, a subclass or an
+instance with an overridden method, and the coordinator always runs the
+package's own secret generation, journal cipher and RFC 6238 check; patches
+made after construction are never called. To hold completions behind an
+application gate (for example a write-activation phase), pass the optional
+deny-only `beforeComplete(operation)`: it runs once per new completion just
+before verification, a throw refuses with that error, and its return value is
+ignored, so it can never accept a code. It does not run for applied replay or
+recovery.
 The encryption key must have durable operator custody before use; do not supply
 a development fallback. Encryption uses the existing scrypt/AES-256-GCM
 configuration. Every payload includes a bootstrap-specific domain, versioned

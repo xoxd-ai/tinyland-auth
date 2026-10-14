@@ -5,6 +5,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installSeams } from '../src/core/seams/index.js';
 import { FileStorageAdapter } from '../src/storage/file.js';
+import { TOTPService } from '../src/core/totp/index.js';
 import { FileTotpEnrollmentCoordinator } from '../src/storage/file-totp-enrollment.js';
 import {
   FileTotpRetirementCoordinator, type FileTotpRetirementConfig,
@@ -41,7 +42,8 @@ async function fixture() {
     expires: new Date(NOW + 60_000).toISOString(), expiresAt: new Date(NOW + 60_000).toISOString() });
   const enrollmentDir = path.join(directory, 'enrollment');
   const enrollment = new FileTotpEnrollmentCoordinator({ directory: enrollmentDir,
-    totp: { generateSecret: vi.fn(), generateQRCode: vi.fn(), encrypt: vi.fn(), decrypt: vi.fn(), verifyTokenWithStep: vi.fn() },
+    // RS6: the gate accepts only a genuine TOTPService; retirement never calls it.
+    totp: new TOTPService({ encryptionKey: 'test-only-retirement-gate-key', issuer: 'Retirement Test' }),
     loadCurrent: async binding => ({ user: await storage.getUser(binding.userId), session: await storage.getSession(binding.sessionId),
       totpSecret: await storage.getTOTPSecret(user.handle), backupCodes: await storage.getBackupCodes(binding.userId) }),
     project: async () => { throw new Error('Enrollment projection not used by retirement'); } });
