@@ -7,8 +7,11 @@
 Reconciles the reviewed `candidate/nonprod-auth-server-20260925-b5d2fca`
 lineage (the auth source the Mothership writer image already runs through
 `--override_module`) onto 1.0.0, so consumers can resolve it from the
-registry (TIN-3692 RU11). Additive for 1.0.0 consumers; no 1.0.0 export is
-removed or renamed.
+registry (TIN-3692 RU11). The API is additive for 1.0.0 consumers: no 1.0.0
+export is removed or renamed. Two behavior changes need a check on upgrade:
+the file adapter now fails closed on unreadable or wrongly bound stored TOTP
+and backup-code credentials, and it requires acknowledged file and directory
+sync (see **File adapter durability** below).
 
 - **`./sveltekit/server`**: a rune-free server entry (`createCSRFHandle`,
   `requireAuth`, `requireContentEditPermission`, ...) that imports in plain
