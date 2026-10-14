@@ -72,14 +72,25 @@ sync (see **File adapter durability** below).
   `verifyTokenWithStep` is refused with `INVALID`. The coordinators then run
   the class methods captured when the module loaded, through `Reflect.apply`
   captured at the same time, and those method functions are frozen. A later
-  patch of the instance, of `TOTPService.prototype`, of the config object, of
-  a captured method function (an own `call`, or a new [[Prototype]], which
-  now throws) or of `Function.prototype.call`/`apply` is never called. The
-  enrolment secret, the journal cipher and the RFC 6238 check are always the
-  package's own; no configuration or later patch of the package's exported
-  objects can make a code verify or pin a seed. Out of scope: code that
-  replaces JavaScript builtins (`Reflect`, `Promise`, `WeakSet`) before this
-  package loads, or that rewrites the installed package files.
+  patch of the instance, of `TOTPService.prototype`, of the config object or
+  of a captured method function (an own `call`, or a new [[Prototype]], which
+  now throws) is never called, and the coordinators' dispatch does not look
+  up `Function.prototype.call`/`apply`. The enrolment secret, the journal
+  cipher and the RFC 6238 check are always the package's own.
+  **Scope of the guarantee:** it covers the package's exported objects and
+  its configuration. No configuration, and no patch of an object the package
+  exports, can make a code verify or pin a seed. It is not a defense against
+  code that already runs in the same process with these powers:
+  - replacing or patching any JavaScript or Node.js builtin, at any time,
+    before or after this package loads. Examples are `Reflect`, `Promise`,
+    `WeakSet`, `Function.prototype`, and `String.prototype.padStart`, which
+    the RFC 6238 truncation in `@otplib/core` calls.
+  - importing unexported `dist` modules by file URL.
+  - rewriting the installed package files.
+
+  Code that can do any of these already controls the process, and no
+  JavaScript library can contain it.
+
   The candidate's structural `Pick<TOTPService, ...>` option (which let
   `verifyTokenWithStep: async () => ({ valid: true })` mint the first
   `super_admin`) is not released.

@@ -517,9 +517,14 @@ configured `TOTPService`, raw `storage` reads (`getAllUsers`, `getTOTPSecret`,
 RS6: `totp` must be the instance `createTOTPService()` returned. The
 constructor refuses a look-alike object, a delegating wrapper, a subclass or an
 instance with an overridden method, and the coordinator always runs the
-package's own secret generation, journal cipher and RFC 6238 check; patches
-made after construction (of the instance, the prototype, the captured method
-functions or `Function.prototype.call`) are never called. To hold completions behind an
+package's own secret generation, journal cipher and RFC 6238 check. Patches
+made after construction to the instance, the prototype or the captured method
+functions are never called, and the coordinator's dispatch does not look up
+`Function.prototype.call`. This covers the package's exported objects and its
+configuration. It does not cover code in the same process that patches a
+JavaScript or Node.js builtin at any time, imports unexported `dist` modules
+by file URL, or rewrites the installed package files (see the 1.1.0
+CHANGELOG). To hold completions behind an
 application gate (for example a write-activation phase), pass the optional
 deny-only `beforeComplete(operation)`: it runs once per new completion just
 before verification, a throw refuses with that error, and its return value is

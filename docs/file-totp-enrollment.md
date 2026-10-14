@@ -45,9 +45,13 @@ const enrollment = new FileTotpEnrollmentCoordinator({
 `totp` is checked at construction: a look-alike object, a delegating wrapper,
 a subclass or an instance with an overridden method is refused with `INVALID`,
 and the coordinator always calls the package's own secret generation, cipher
-and RFC 6238 verification, so a later patch of the instance, the prototype,
-the captured (frozen) method functions or `Function.prototype.call` is never
-called (RS6).
+and RFC 6238 verification. A later patch of the instance, the prototype or
+the captured (frozen) method functions is never called, and the dispatch does
+not look up `Function.prototype.call` (RS6). The guarantee covers the
+package's exported objects and its configuration. It does not cover code in
+the same process that patches a JavaScript or Node.js builtin at any time,
+imports unexported `dist` modules by file URL, or rewrites the installed
+package files.
 `beforeComplete` runs once per new completion, after receipt replay has
 returned and immediately before the code is verified; a throw refuses with that
 same error and its return value is ignored.
