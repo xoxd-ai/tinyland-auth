@@ -42,7 +42,12 @@ removed or renamed.
   literal `true` opts in). Public reads (`findAllPublic`, `findByIdPublic`,
   `findByHandlePublic`) now copy the explicit `PUBLIC_ADMIN_USER_FIELDS`
   allowlist instead of removing two known secret fields, so any other stored
-  credential material never reaches a public projection. Consumers replace the
+  credential material never reaches a public projection. The allowlist is the
+  17-field monorepo projection (tinyland.dev f7e32942): `email`, `permissions`,
+  `isLocked`, `federationEnabled` and the profile fields are **not** part of
+  `PublicAdminUser` (the archived standalone's `Omit` projection returned
+  them). Read grants and opt-ins through `findById`/`findAll` behind a
+  capability check instead. Consumers replace the
   `tummycrypt_tinyland_admin_user_repository` bazel_dep with this subpath; the
   standalone repository stays archived. The default `filePermissions` is now
   `0o600` (was `0o666`); configure it explicitly to keep a wider mode.

@@ -32,22 +32,27 @@ export interface AdminUser {
  * RV15: public projections copy ONLY these fields. Anything else stored on an
  * account record (password hash, TOTP secret material, recovery codes, future
  * credential fields) never reaches a public read, even if a writer adds it.
+ *
+ * This is the explicit allowlist from the monorepo admin-user projection
+ * (tinyland.dev f7e32942). It deliberately excludes contact (`email`),
+ * authority (`permissions`, `isLocked`), opt-in (`federationEnabled`) and
+ * profile fields: `*Public` reads back admin user lists that lower admin roles
+ * can view, and the consuming app's authority audit (V-PRED-3) forbids
+ * `email`, `permissions`, `passwordHash` and `totpSecretId` here. Callers that
+ * need grants or opt-ins read them through a dedicated, capability-checked
+ * server path (`findById`/`findAll`), never through this projection.
  */
 export const PUBLIC_ADMIN_USER_FIELDS = Object.freeze([
 	'id',
 	'username',
 	'handle',
 	'displayName',
-	'email',
 	'role',
 	'isActive',
-	'isLocked',
 	'createdAt',
 	'updatedAt',
 	'lastLoginAt',
 	'lastLogin',
-	'permissions',
-	'federationEnabled',
 	'totpEnabled',
 	'needsOnboarding',
 	'onboardingStep',
@@ -55,12 +60,6 @@ export const PUBLIC_ADMIN_USER_FIELDS = Object.freeze([
 	'githubId',
 	'githubLogin',
 	'githubLinkedAt',
-	'bio',
-	'avatarUrl',
-	'bannerUrl',
-	'website',
-	'location',
-	'pronouns',
 ] as const);
 
 export type PublicAdminUserField = (typeof PUBLIC_ADMIN_USER_FIELDS)[number];
@@ -70,16 +69,12 @@ export interface PublicAdminUser {
 	username: string;
 	handle?: string;
 	displayName?: string;
-	email?: string;
 	role: string;
 	isActive?: boolean;
-	isLocked?: boolean;
 	createdAt?: string;
 	updatedAt?: string;
 	lastLoginAt?: string | null;
 	lastLogin?: string | null;
-	permissions?: string[];
-	federationEnabled?: boolean;
 	totpEnabled?: boolean;
 	needsOnboarding?: boolean;
 	onboardingStep?: number;
@@ -87,12 +82,6 @@ export interface PublicAdminUser {
 	githubId?: number | null;
 	githubLogin?: string | null;
 	githubLinkedAt?: string | null;
-	bio?: string;
-	avatarUrl?: string;
-	bannerUrl?: string;
-	website?: string;
-	location?: string;
-	pronouns?: string;
 }
 
 export interface PublicHandleIdentity {
