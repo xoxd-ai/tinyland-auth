@@ -188,9 +188,18 @@ async function probe(pkgDir) {
       value: async (_service, handle) => ({ handle, secret: PINNED, createdAt: new Date() }),
       configurable: true,
     }));
-    const second = new FileBootstrapCoordinator(bootstrapConfig(fresh()));
-    const secondSetup = await second.begin({ handle: 'second', passwordHash: '$2b$04$' + 'B'.repeat(53) });
-    out.secretNotPinnedAfterFunctionPatch = secondSetup.secret !== PINNED && /^[A-Z2-7]{32,}$/.test(secondSetup.secret);
+    // Its own empty user store, so an earlier regression that already minted a
+    // user cannot make begin() throw and hide the remaining findings.
+    try {
+      const second = new FileBootstrapCoordinator(bootstrapConfig(fresh(), {
+        storage: { getAllUsers: async () => [], getTOTPSecret: async () => null, getBackupCodes: async () => null },
+        project: async () => undefined,
+      }));
+      const secondSetup = await second.begin({ handle: 'second', passwordHash: '$2b$04$' + 'B'.repeat(53) });
+      out.secretNotPinnedAfterFunctionPatch = secondSetup.secret !== PINNED && /^[A-Z2-7]{32,}$/.test(secondSetup.secret);
+    } catch (error) {
+      out.secretNotPinnedAfterFunctionPatch = `error: ${error?.code ?? error?.message ?? 'unknown'}`;
+    }
     out.usersAfterFunctionPatches = users.length;
 
     // 3. beforeComplete is deny-only.
