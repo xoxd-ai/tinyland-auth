@@ -395,6 +395,23 @@ describe('production entry has no development or seam bypass (RP2)', () => {
     expect(result.stderr).toContain('patchedWrong is "completed"');
   }, 120_000);
 
+  it('the TOTP authority check turns red when the captured verifier is called through a patchable .call again (W8 r2)', () => {
+    const dir = contaminatedCopy('pkg-call-lookup-regression');
+    const file = join(dir, 'dist/core/totp/index.js');
+    const source = readFileSync(file, 'utf8');
+    const regressed = source
+      .replace(/for \(const method of Object\.values\(intrinsic\)\)\s*Object\.freeze\(method\);/, '')
+      .replace(/invoke\(intrinsic\.verifyTokenWithStep,\s*service,\s*\[/, 'intrinsic.verifyTokenWithStep.call(service, ...[');
+    expect(regressed).not.toContain('Object.freeze(method)');
+    expect(regressed).toContain('intrinsic.verifyTokenWithStep.call(service, ...[');
+    writeFileSync(file, regressed);
+
+    const result = checkTotpAuthority(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('capturedFrozen is false');
+    expect(result.stderr).toContain('ownCallWrong is "completed"');
+  }, 120_000);
+
   it('the artifact check turns red when the mTLS development auto-pass comes back', () => {
     const dir = contaminatedCopy('pkg-mtls-dev-regression');
     appendFileSync(

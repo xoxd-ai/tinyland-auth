@@ -518,7 +518,8 @@ RS6: `totp` must be the instance `createTOTPService()` returned. The
 constructor refuses a look-alike object, a delegating wrapper, a subclass or an
 instance with an overridden method, and the coordinator always runs the
 package's own secret generation, journal cipher and RFC 6238 check; patches
-made after construction are never called. To hold completions behind an
+made after construction (of the instance, the prototype, the captured method
+functions or `Function.prototype.call`) are never called. To hold completions behind an
 application gate (for example a write-activation phase), pass the optional
 deny-only `beforeComplete(operation)`: it runs once per new completion just
 before verification, a throw refuses with that error, and its return value is

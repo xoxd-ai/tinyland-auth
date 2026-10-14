@@ -7,6 +7,11 @@ import type { AdminUser, BackupCodeSet, EncryptedData, EncryptedTOTPSecret } fro
 import type { IStorageAdapter } from './interface.js';
 import { nowMsFor } from '../core/seams/index.js';
 
+// RS6 (W8 r2): captured at module evaluation. The deny-only hook runs through
+// it, so an own `call` on the caller's function (or a later patch of
+// `Function.prototype.call`) cannot skip a denying gate.
+const invoke = Reflect.apply;
+
 export interface BootstrapProfile {
   displayName: string;
   bio: string;
@@ -370,7 +375,7 @@ export class FileBootstrapCoordinator {
       if (typeof token !== 'string' || !/^\d{6}$/.test(token)) invalid();
       // Deny-only: a throw refuses; the result is discarded and never accepts.
       const denyGate = this.#beforeComplete;
-      if (denyGate) await denyGate.call(undefined, 'bootstrap.complete');
+      if (denyGate) await invoke(denyGate, undefined, ['bootstrap.complete']);
       const verified = await this.#totp.verifyTokenWithStep({ handle: pending.handle, secret: pending.secret, createdAt: new Date(pending.createdAt) }, token);
       if (!verified.valid || !Number.isSafeInteger(verified.step) || verified.step! < 0) invalid();
       await this.empty(pending); this.unexpired(pending);

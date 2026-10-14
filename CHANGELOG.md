@@ -66,17 +66,25 @@ removed or renamed.
   `TOTPService` constructor (`createTOTPService`): a structural look-alike,
   a wrapper object, a subclass, a re-prototyped instance or an instance with
   an own `generateSecret`, `generateQRCode`, `encrypt`, `decrypt` or
-  `verifyTokenWithStep` is refused with `INVALID`. The coordinators then call
-  the class methods captured when the module loaded, so a later patch of the
-  instance, of `TOTPService.prototype` or of the config object is never
-  called. The enrolment secret, the journal cipher and the RFC 6238 check are
-  always the package's own; no caller can make a code verify or pin a seed.
+  `verifyTokenWithStep` is refused with `INVALID`. The coordinators then run
+  the class methods captured when the module loaded, through `Reflect.apply`
+  captured at the same time, and those method functions are frozen. A later
+  patch of the instance, of `TOTPService.prototype`, of the config object, of
+  a captured method function (an own `call`, or a new [[Prototype]], which
+  now throws) or of `Function.prototype.call`/`apply` is never called. The
+  enrolment secret, the journal cipher and the RFC 6238 check are always the
+  package's own; no configuration or later patch of the package's exported
+  objects can make a code verify or pin a seed. Out of scope: code that
+  replaces JavaScript builtins (`Reflect`, `Promise`, `WeakSet`) before this
+  package loads, or that rewrites the installed package files.
   The candidate's structural `Pick<TOTPService, ...>` option (which let
   `verifyTokenWithStep: async () => ({ valid: true })` mint the first
   `super_admin`) is not released.
 - **`beforeComplete` deny-only gate.** Both coordinators take an optional
   `beforeComplete(operation)` (`'bootstrap.complete'` or `'totp.complete'`),
-  awaited under the gate once per NEW completion, after committed/applied
+  awaited under the gate once per NEW completion (through the captured
+  `Reflect.apply`, so an own `call` on the hook cannot skip it), after
+  committed/applied
   replay has returned and immediately before the coordinator verifies the
   code. A throw or rejection refuses with that same error and leaves the
   pending attempt untouched; the return value is ignored, so it cannot accept
@@ -87,8 +95,11 @@ removed or renamed.
   `beforeComplete: (operation) => requireAuthorityWriteActivation(operation)`.
 - `tests/production-artifact.test.ts` and `//:totp_authority_artifact_test`
   prove this on the built package under `NODE_ENV` production, unset and
-  development: every refused shape throws, patched verifiers are ignored, a
-  wrong code mints no user, and the genuine code still completes.
+  development: every refused shape throws, patched verifiers are ignored
+  (including an own `call` or a new [[Prototype]] on the captured method
+  functions, and a `Function.prototype.call`/`apply` patch), a denying hook
+  with a patched `call` still denies, a wrong code mints no user, and the
+  genuine code still completes.
 
 ### Release surface
 

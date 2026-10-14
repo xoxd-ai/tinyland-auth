@@ -233,9 +233,21 @@ export class TOTPService {
 }
 
 /**
+ * `Reflect.apply`, captured at module evaluation (RS6, W8 r2). The captured
+ * methods run through it, never through `method.call(...)`: `.call` is looked
+ * up on the function object at every invocation, so an own `call`, a new
+ * [[Prototype]] on a captured method, or a later patch of
+ * `Function.prototype.call` would otherwise decide what runs.
+ */
+const invoke = Reflect.apply;
+
+/**
  * The methods an authority coordinator may call, captured from the class at
  * module evaluation, before any importer runs. A later patch of
  * `TOTPService.prototype` or of an instance is never called through them.
+ * The captured function objects stay reachable as
+ * `TOTPService.prototype.<method>`, so each one is frozen here as well:
+ * defining a property on one or changing its [[Prototype]] throws.
  */
 const intrinsic = Object.freeze({
   generateSecret: TOTPService.prototype.generateSecret,
@@ -244,6 +256,7 @@ const intrinsic = Object.freeze({
   decrypt: TOTPService.prototype.decrypt,
   verifyTokenWithStep: TOTPService.prototype.verifyTokenWithStep,
 });
+for (const method of Object.values(intrinsic)) Object.freeze(method);
 
 /** The TOTP primitives a durable authority coordinator runs, bound to one genuine service. */
 export interface TrustedTOTPPrimitives {
@@ -286,24 +299,20 @@ export function bindTrustedTOTPService(value: unknown): TrustedTOTPPrimitives {
   }
   const service = value as TOTPService;
   return Object.freeze({
-    generateSecret: (handle: string, email?: string) =>
-      intrinsic.generateSecret.call(service, handle, email),
-    generateQRCode: (secret: TOTPSecret) =>
-      intrinsic.generateQRCode.call(service, secret),
-    encrypt: (text: string) => intrinsic.encrypt.call(service, text),
-    decrypt: (encryptedData: EncryptedData) =>
-      intrinsic.decrypt.call(service, encryptedData),
+    generateSecret: (handle: string, email?: string): Promise<TOTPSecret> =>
+      invoke(intrinsic.generateSecret, service, [handle, email]),
+    generateQRCode: (secret: TOTPSecret): Promise<string> =>
+      invoke(intrinsic.generateQRCode, service, [secret]),
+    encrypt: (text: string): EncryptedData =>
+      invoke(intrinsic.encrypt, service, [text]),
+    decrypt: (encryptedData: EncryptedData): string =>
+      invoke(intrinsic.decrypt, service, [encryptedData]),
     verifyTokenWithStep: (
       secretOrNull: TOTPSecret | null,
       token: string,
       lastUsedStep?: number,
-    ) =>
-      intrinsic.verifyTokenWithStep.call(
-        service,
-        secretOrNull,
-        token,
-        lastUsedStep,
-      ),
+    ): Promise<{ valid: boolean; step?: number }> =>
+      invoke(intrinsic.verifyTokenWithStep, service, [secretOrNull, token, lastUsedStep]),
   });
 }
 

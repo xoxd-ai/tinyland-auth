@@ -10,6 +10,13 @@ import { FileBootstrapCoordinator, type BootstrapCompletion, type FileBootstrapC
 import { FileTotpEnrollmentCoordinator } from '../src/storage/file-totp-enrollment.js';
 import type { AdminUser, BackupCodeSet, EncryptedData, EncryptedTOTPSecret } from '../src/types/auth.js';
 
+// RS6 (W8 r2): the method functions the coordinators captured at module load,
+// read before any spy replaces a prototype property.
+const AUTHORITY_METHODS = ['generateSecret', 'generateQRCode', 'encrypt', 'decrypt', 'verifyTokenWithStep'] as const;
+const ORIGINAL_METHODS = Object.fromEntries(
+  AUTHORITY_METHODS.map((name) => [name, TOTPService.prototype[name]]),
+) as Record<(typeof AUTHORITY_METHODS)[number], (...args: never[]) => unknown>;
+
 const START = Date.parse('2026-09-24T02:00:00.000Z');
 const HASH = '$2b$04$' + 'A'.repeat(53);
 // RS6: no stubbed TOTP. The coordinator runs the package's own secret
@@ -571,6 +578,31 @@ describe('RS6: the first-admin coordinator verifies the code itself', () => {
     // TypeScript `private` would not stop this; the bound primitives are native #private fields.
     Object.assign(coordinator, { totp: { verifyTokenWithStep: alwaysValid }, beforeComplete: alwaysValid });
     await expect(coordinator.complete({ reference: setup.reference, token: f.wrongToken(setup) })).rejects.toMatchObject({ code: 'INVALID' });
+    expect(f.project).not.toHaveBeenCalled();
+    expect(f.current.users).toEqual([]);
+    expect((await f.read()).record.state).toBe('pending');
+    // Non-vacuous: the genuine code still completes through the same coordinator.
+    await expect(coordinator.complete({ reference: setup.reference, token: f.token(setup) })).resolves.toMatchObject({ handle: 'first-admin' });
+    expect(f.current.users).toMatchObject([{ handle: 'first-admin', role: 'super_admin' }]);
+  });
+
+  it('ignores patches of the captured method functions and of the deny hook own call (W8 r2)', async () => {
+    const f = await fixture();
+    const coordinator = f.fresh();
+    const setup = await readyAttempt(f, coordinator);
+    const forged = async () => ({ valid: true, step: 1 });
+    for (const name of AUTHORITY_METHODS) expect(Object.isFrozen(ORIGINAL_METHODS[name])).toBe(true);
+    // The r1 fix ran `method.call(service, ...)`: either patch below then minted super_admin.
+    expect(() => Object.defineProperty(ORIGINAL_METHODS.verifyTokenWithStep, 'call', { value: forged })).toThrow(TypeError);
+    expect(() => Object.setPrototypeOf(ORIGINAL_METHODS.verifyTokenWithStep, { call: forged, apply: forged })).toThrow(TypeError);
+    expect(() => Object.defineProperty(ORIGINAL_METHODS.generateSecret, 'call', { value: forged })).toThrow(TypeError);
+    await expect(coordinator.complete({ reference: setup.reference, token: f.wrongToken(setup) })).rejects.toMatchObject({ code: 'INVALID' });
+    // A denying hook still denies when its own `call` is replaced.
+    class WritesClosed extends Error { readonly status = 503; }
+    const closed = new WritesClosed('authority writes are paused');
+    Object.defineProperty(f.completionGate, 'call', { value: async () => undefined, configurable: true });
+    f.completionGate.mockRejectedValueOnce(closed);
+    await expect(coordinator.complete({ reference: setup.reference, token: f.token(setup) })).rejects.toBe(closed);
     expect(f.project).not.toHaveBeenCalled();
     expect(f.current.users).toEqual([]);
     expect((await f.read()).record.state).toBe('pending');

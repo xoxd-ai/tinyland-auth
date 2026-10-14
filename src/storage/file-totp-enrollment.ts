@@ -8,6 +8,11 @@ import { ADMIN_ROLES } from '../types/auth.js';
 import type { AdminUser, BackupCodeSet, EncryptedData, EncryptedTOTPSecret, Session } from '../types/auth.js';
 import { nowMsFor } from '../core/seams/index.js';
 
+// RS6 (W8 r2): captured at module evaluation. The deny-only hook runs through
+// it, so an own `call` on the caller's function (or a later patch of
+// `Function.prototype.call`) cannot skip a denying gate.
+const invoke = Reflect.apply;
+
 export interface TotpEnrollmentBinding {
   userId: string;
   sessionId: string;
@@ -568,7 +573,7 @@ export class FileTotpEnrollmentCoordinator {
       if (typeof bound.token !== 'string' || !/^\d{6}$/.test(bound.token.replace(/\s/g, ''))) throw new TotpEnrollmentError('INVALID', 'Invalid TOTP code');
       // Deny-only: a throw refuses; the result is discarded and never accepts.
       const denyGate = this.#beforeComplete;
-      if (denyGate) await denyGate.call(undefined, 'totp.complete');
+      if (denyGate) await invoke(denyGate, undefined, ['totp.complete']);
       const secret = this.#totp.decrypt(record.secret);
       const verification = await this.#totp.verifyTokenWithStep({ handle: record.handle, secret, createdAt: new Date(record.createdAt) }, bound.token);
       if (!verification.valid || !Number.isSafeInteger(verification.step) || verification.step! < 0) throw new TotpEnrollmentError('INVALID', 'Invalid TOTP code');

@@ -21,6 +21,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const PROBE_FLAG = '--probe';
+const AUTHORITY_METHODS = ['generateSecret', 'generateQRCode', 'encrypt', 'decrypt', 'verifyTokenWithStep'];
 
 async function probe(pkgDir) {
   const entry = (file) => pathToFileURL(join(pkgDir, 'dist', file)).href;
@@ -29,6 +30,8 @@ async function probe(pkgDir) {
   const { generateAuthenticatorToken } = await import(entry('totp/otplib-compat.js'));
   const { FileBootstrapCoordinator, FileTotpEnrollmentCoordinator } = storageEntry;
   const { TOTPService, createTOTPService } = totpEntry;
+  // The method function objects the coordinators captured at module load.
+  const original = Object.fromEntries(AUTHORITY_METHODS.map((name) => [name, TOTPService.prototype[name]]));
   const root = mkdtempSync(join(tmpdir(), 'tinyland-auth-totp-authority-'));
   const out = {};
   try {
@@ -144,11 +147,60 @@ async function probe(pkgDir) {
     out.patchedZeros = await attempt(new Set([-60, -30, 0, 30, 60].map(codeAt)).has('000000') ? wrongCode() : '000000');
     out.usersAfterPatched = users.length;
 
+    // 2c. W8 r2 (S2): patch the captured method functions themselves. The r1
+    // fix ran them as `method.call(service, ...)`, and `.call` was looked up on
+    // the shared, unfrozen TOTPService.prototype method, so an own `call` or a
+    // new [[Prototype]] on it minted super_admin with a wrong code.
+    const forged = async () => ({ valid: true, step: 1 });
+    const tryPatch = (patch) => {
+      try {
+        patch();
+        return 'applied';
+      } catch {
+        return 'refused';
+      }
+    };
+    out.capturedFrozen = AUTHORITY_METHODS.every((name) => Object.isFrozen(original[name]));
+    out.ownCallPatch = tryPatch(() => Object.defineProperty(original.verifyTokenWithStep, 'call', { value: forged, configurable: true }));
+    out.ownCallWrong = await attempt(wrongCode());
+    out.functionReprototype = tryPatch(() => Object.setPrototypeOf(original.verifyTokenWithStep, { call: forged, apply: forged }));
+    out.functionReprototypeWrong = await attempt(wrongCode());
+    // 2d. A targeted Function.prototype.call/apply patch; every other call passes through.
+    const nativeCall = Function.prototype.call;
+    const nativeApply = Function.prototype.apply;
+    const passThrough = Reflect.apply;
+    try {
+      Function.prototype.call = function (thisArg, ...args) {
+        if (this === original.verifyTokenWithStep) return forged();
+        return passThrough(nativeCall, this, [thisArg, ...args]);
+      };
+      Function.prototype.apply = function (thisArg, args) {
+        if (this === original.verifyTokenWithStep) return forged();
+        return passThrough(nativeApply, this, [thisArg, args]);
+      };
+      out.globalCallPatchWrong = await attempt(wrongCode());
+    } finally {
+      Function.prototype.call = nativeCall;
+      Function.prototype.apply = nativeApply;
+    }
+    // 2e. An own `call` on the captured generateSecret cannot pin a new enrolment seed.
+    out.ownCallSeed = tryPatch(() => Object.defineProperty(original.generateSecret, 'call', {
+      value: async (_service, handle) => ({ handle, secret: PINNED, createdAt: new Date() }),
+      configurable: true,
+    }));
+    const second = new FileBootstrapCoordinator(bootstrapConfig(fresh()));
+    const secondSetup = await second.begin({ handle: 'second', passwordHash: '$2b$04$' + 'B'.repeat(53) });
+    out.secretNotPinnedAfterFunctionPatch = secondSetup.secret !== PINNED && /^[A-Z2-7]{32,}$/.test(secondSetup.secret);
+    out.usersAfterFunctionPatches = users.length;
+
     // 3. beforeComplete is deny-only.
     gate = async () => ({ valid: true, step: 1 });
     out.affirmingHookWrong = await attempt(wrongCode());
     gate = async () => { throw Object.assign(new Error('writes closed'), { code: 'WRITES_CLOSED' }); };
     out.denyingHookGenuine = await attempt(genuineCode());
+    // 3b. W8 r2: an own `call` on the caller's hook cannot skip a denying gate.
+    out.hookOwnCallPatch = tryPatch(() => Object.defineProperty(config.beforeComplete, 'call', { value: async () => undefined, configurable: true }));
+    out.denyingHookOwnCall = await attempt(genuineCode());
     out.usersAfterHooks = users.length;
 
     // 4. Non-vacuous: the genuine code still completes through the same coordinator.
@@ -179,8 +231,19 @@ const EXPECTED = {
   patchedWrong: 'INVALID',
   patchedZeros: 'INVALID',
   usersAfterPatched: 0,
+  capturedFrozen: true,
+  ownCallPatch: 'refused',
+  ownCallWrong: 'INVALID',
+  functionReprototype: 'refused',
+  functionReprototypeWrong: 'INVALID',
+  globalCallPatchWrong: 'INVALID',
+  ownCallSeed: 'refused',
+  secretNotPinnedAfterFunctionPatch: true,
+  usersAfterFunctionPatches: 0,
   affirmingHookWrong: 'INVALID',
   denyingHookGenuine: 'WRITES_CLOSED',
+  hookOwnCallPatch: 'applied',
+  denyingHookOwnCall: 'WRITES_CLOSED',
   usersAfterHooks: 0,
   genuine: 'completed',
   minted: [{ handle: 'attacker', role: 'super_admin' }],
@@ -219,7 +282,9 @@ if (process.argv[2] === PROBE_FLAG) {
     process.exit(1);
   }
   console.log(
-    'totp authority clean: ./storage coordinators refuse 7 non-genuine TOTP shapes, ignore patched verifiers, ' +
-      'keep beforeComplete deny-only, and mint super_admin only for the genuine code (NODE_ENV production, unset, development)',
+    'totp authority clean: ./storage coordinators refuse 7 non-genuine TOTP shapes, ignore patched verifiers ' +
+      '(instance, prototype, config, own call / new prototype on the frozen captured methods, Function.prototype.call/apply), ' +
+      'keep beforeComplete deny-only even with a patched call, and mint super_admin only for the genuine code ' +
+      '(NODE_ENV production, unset, development)',
   );
 }

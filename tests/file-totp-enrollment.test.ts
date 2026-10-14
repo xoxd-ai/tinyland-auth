@@ -598,6 +598,24 @@ describe('FileTotpEnrollmentCoordinator pending custody', () => {
     await expect(f.complete(setup, real)).resolves.toMatchObject({ attemptId: setup.attemptId });
   });
 
+  it('never consults a patched captured method function, and a denying hook with a patched call still denies (W8 r2)', async () => {
+    const f = await fixture();
+    const setup = await f.coordinator.begin(f.binding);
+    const forged = async () => ({ valid: true, step: 1 });
+    const verify = TOTPService.prototype.verifyTokenWithStep;
+    expect(Object.isFrozen(verify)).toBe(true);
+    expect(() => Object.defineProperty(verify, 'call', { value: forged })).toThrow(TypeError);
+    expect(() => Object.setPrototypeOf(verify, { call: forged, apply: forged })).toThrow(TypeError);
+    await expect(f.complete(setup, f.wrongTokenFor(setup))).rejects.toMatchObject({ code: 'INVALID' });
+    const closed = Object.assign(new Error('authority writes are paused'), { status: 503 });
+    Object.defineProperty(f.completionGate, 'call', { value: async () => undefined, configurable: true });
+    f.completionGate.mockRejectedValueOnce(closed);
+    await expect(f.complete(setup)).rejects.toBe(closed);
+    expect((await f.readRecord()).state).toBe('pending');
+    expect(f.project).not.toHaveBeenCalled();
+    await expect(f.complete(setup)).resolves.toMatchObject({ attemptId: setup.attemptId });
+  });
+
   it('lets beforeComplete deny but never accept', async () => {
     const f = await fixture();
     const setup = await f.coordinator.begin(f.binding);
