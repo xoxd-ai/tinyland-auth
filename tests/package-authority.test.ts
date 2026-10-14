@@ -100,6 +100,13 @@ describe('package release authority', () => {
     expect(buildBazel).toMatch(
       /js_test\(\s*name = "production_artifact_test",\s*args = \["\$\(rootpath :pkg\)"\]/,
     );
+    // RS6 (W8 r1): the coordinators' TOTP authority is proven on the same artifact.
+    expect(bazelTestScript).toContain(
+      'npx --yes @bazel/bazelisk test //:totp_authority_artifact_test --test_output=errors',
+    );
+    expect(buildBazel).toMatch(
+      /js_test\(\s*name = "totp_authority_artifact_test",\s*args = \["\$\(rootpath :pkg\)"\]/,
+    );
   });
 
   it('checks release metadata before package validation and publication', async () => {

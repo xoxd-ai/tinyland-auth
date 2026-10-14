@@ -124,11 +124,6 @@ async function probe(pkgDir) {
         if (!window.has(candidate)) return candidate;
       }
     };
-    const originalPrototypeVerify = TOTPService.prototype.verifyTokenWithStep;
-    service.verifyTokenWithStep = alwaysValid;
-    TOTPService.prototype.verifyTokenWithStep = alwaysValid;
-    config.totp = { verifyTokenWithStep: alwaysValid };
-    coordinator.totp = { verifyTokenWithStep: alwaysValid, decrypt: (value) => service.decrypt(value), encrypt: (value) => service.encrypt(value) };
     const attempt = async (token) => {
       try {
         await coordinator.complete({ reference: setup.reference, token });
@@ -137,7 +132,15 @@ async function probe(pkgDir) {
         return error?.code ?? error?.message ?? 'error';
       }
     };
+    // 2a. Patch the instance and the class prototype: the 1.1.0 candidate called
+    // the caller's object, so this alone minted super_admin with a wrong code.
+    const originalPrototypeVerify = TOTPService.prototype.verifyTokenWithStep;
+    service.verifyTokenWithStep = alwaysValid;
+    TOTPService.prototype.verifyTokenWithStep = alwaysValid;
     out.patchedWrong = await attempt(wrongCode());
+    // 2b. Then also swap the config object's totp and write a coordinator property.
+    config.totp = { ...lookAlike };
+    coordinator.totp = { ...lookAlike };
     out.patchedZeros = await attempt(new Set([-60, -30, 0, 30, 60].map(codeAt)).has('000000') ? wrongCode() : '000000');
     out.usersAfterPatched = users.length;
 
