@@ -1817,6 +1817,8 @@ describe('RV15 public projection allowlist', () => {
 	const secretBearing = makeUser({
 		id: 'allow-1',
 		totpSecretId: 'secret-id',
+		email: 'private@example.com',
+		permissions: ['content.own.publish'],
 		federationEnabled: true,
 		isLocked: true,
 		bio: 'public bio',
@@ -1837,7 +1839,11 @@ describe('RV15 public projection allowlist', () => {
 			for (const key of Object.keys(projection as object)) {
 				expect(PUBLIC_ADMIN_USER_FIELDS as readonly string[]).toContain(key);
 			}
-			expect(projection).toMatchObject({ id: 'allow-1', federationEnabled: true, isLocked: true, bio: 'public bio' });
+			expect(projection).toMatchObject({ id: 'allow-1', username: 'testuser', role: 'admin', totpEnabled: false });
+			// f7e32942 / V-PRED-3: contact, authority, opt-in and profile fields stay off the public projection.
+			for (const field of ['email', 'permissions', 'isLocked', 'federationEnabled', 'bio']) {
+				expect(projection).not.toHaveProperty(field);
+			}
 			const serialized = JSON.stringify(projection);
 			for (const secret of [
 				'passwordHash', 'totpSecret', 'secret-id', 'backupCodes', 'hash-a',
@@ -1853,5 +1859,16 @@ describe('RV15 public projection allowlist', () => {
 			expect(field).not.toMatch(/password|secret|hash|token|backup|recovery/i);
 		}
 		expect(Object.isFrozen(PUBLIC_ADMIN_USER_FIELDS)).toBe(true);
+	});
+
+	it('matches the monorepo f7e32942 allowlist exactly', () => {
+		expect([...PUBLIC_ADMIN_USER_FIELDS]).toEqual([
+			'id', 'username', 'handle', 'displayName', 'role', 'isActive', 'createdAt', 'updatedAt',
+			'lastLoginAt', 'lastLogin', 'totpEnabled', 'needsOnboarding', 'onboardingStep', 'firstLogin',
+			'githubId', 'githubLogin', 'githubLinkedAt',
+		]);
+		for (const forbidden of ['email', 'passwordHash', 'permissions', 'totpSecretId']) {
+			expect(PUBLIC_ADMIN_USER_FIELDS as readonly string[]).not.toContain(forbidden);
+		}
 	});
 });
