@@ -520,11 +520,20 @@ instance with an overridden method, and the coordinator always runs the
 package's own secret generation, journal cipher and RFC 6238 check. Patches
 made after construction to the instance, the prototype or the captured method
 functions are never called, and the coordinator's dispatch does not look up
-`Function.prototype.call`. This covers the package's exported objects and its
-configuration. It does not cover code in the same process that patches a
-JavaScript or Node.js builtin at any time, imports unexported `dist` modules
-by file URL, or rewrites the installed package files (see the 1.1.0
-CHANGELOG). To hold completions behind an
+`Function.prototype.call`. `FileBootstrapCoordinator` (the class and its
+prototype) is frozen when the module loads, and so is each instance it
+constructs. Wrapping a method such as `pending` to swap the journalled seed
+therefore throws a `TypeError`. This covers `TOTPService`, the four `./storage`
+authority classes and the config object. The callbacks (`storage`, `project`,
+`withExclusiveAuth`, `assertNamespaceAvailable`, `beforeComplete`) are the
+application's own trusted code. The guarantee does not cover code in the
+same process that:
+- patches a JavaScript or Node.js builtin at any time;
+- patches a dependency such as `otplib`;
+- imports unexported `dist` modules by file URL;
+- rewrites the installed package files.
+
+See the 1.1.0 CHANGELOG. To hold completions behind an
 application gate (for example a write-activation phase), pass the optional
 deny-only `beforeComplete(operation)`: it runs once per new completion just
 before verification, a throw refuses with that error, and its return value is

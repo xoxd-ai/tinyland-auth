@@ -128,6 +128,9 @@ export class FileTotpRetirementCoordinator {
   constructor(private readonly config: FileTotpRetirementConfig) {
     if (!config.directory || typeof config.withExclusiveAuth !== 'function') fail();
     this.directory = path.resolve(config.directory);
+    // RS6 (W8 r3): an instance this class constructs is frozen, so no own
+    // property can shadow a method. A subclass is the caller's own code.
+    if (new.target === FileTotpRetirementCoordinator) Object.freeze(this);
   }
   async recover(): Promise<void> {
     return this.config.withExclusiveAuth(() => this.recoverUnsafe());
@@ -325,3 +328,9 @@ export class FileTotpRetirementCoordinator {
     } catch { await fs.unlink(temporary).catch(() => undefined); fail('RECOVERY_REQUIRED'); }
   }
 }
+
+// RS6 (W8 r3): the class and its prototype are frozen when this module
+// loads. Replacing or wrapping a method (for example one that reads the
+// journal or binds the reference) throws a TypeError and changes nothing.
+Object.freeze(FileTotpRetirementCoordinator.prototype);
+Object.freeze(FileTotpRetirementCoordinator);

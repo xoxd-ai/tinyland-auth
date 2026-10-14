@@ -8,6 +8,8 @@ import { generateAuthenticatorToken } from '../src/totp/otplib-compat.js';
 import { hashBackupCode } from '../src/core/backup-codes/index.js';
 import { FileBootstrapCoordinator, type BootstrapCompletion, type FileBootstrapConfig } from '../src/storage/file-bootstrap.js';
 import { FileTotpEnrollmentCoordinator } from '../src/storage/file-totp-enrollment.js';
+import { FileTotpRetirementCoordinator } from '../src/storage/file-totp-retirement.js';
+import { FileActionStepUpStore } from '../src/storage/action-step-up.js';
 import type { AdminUser, BackupCodeSet, EncryptedData, EncryptedTOTPSecret } from '../src/types/auth.js';
 
 // RS6 (W8 r2): the method functions the coordinators captured at module load,
@@ -575,8 +577,9 @@ describe('RS6: the first-admin coordinator verifies the code itself', () => {
     Object.defineProperty(f.totp, 'generateSecret', { value: async () => ({ handle: 'x', secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP', createdAt: new Date() }), configurable: true });
     vi.spyOn(TOTPService.prototype, 'verifyTokenWithStep').mockImplementation(alwaysValid);
     (coordinator as unknown as { config: FileBootstrapConfig }).config.totp = { verifyTokenWithStep: alwaysValid } as never;
-    // TypeScript `private` would not stop this; the bound primitives are native #private fields.
-    Object.assign(coordinator, { totp: { verifyTokenWithStep: alwaysValid }, beforeComplete: alwaysValid });
+    // The bound primitives are native #private fields, and (W8 r3) the instance
+    // is frozen, so an own property cannot even be added.
+    expect(() => Object.assign(coordinator, { totp: { verifyTokenWithStep: alwaysValid }, beforeComplete: alwaysValid })).toThrow(TypeError);
     await expect(coordinator.complete({ reference: setup.reference, token: f.wrongToken(setup) })).rejects.toMatchObject({ code: 'INVALID' });
     expect(f.project).not.toHaveBeenCalled();
     expect(f.current.users).toEqual([]);
@@ -609,6 +612,43 @@ describe('RS6: the first-admin coordinator verifies the code itself', () => {
     // Non-vacuous: the genuine code still completes through the same coordinator.
     await expect(coordinator.complete({ reference: setup.reference, token: f.token(setup) })).resolves.toMatchObject({ handle: 'first-admin' });
     expect(f.current.users).toMatchObject([{ handle: 'first-admin', role: 'super_admin' }]);
+  });
+
+  it('freezes the exported authority classes, their prototypes and their instances (W8 r3)', async () => {
+    const f = await fixture();
+    const coordinator = f.fresh();
+    const setup = await readyAttempt(f, coordinator);
+    for (const authority of [FileBootstrapCoordinator, FileTotpEnrollmentCoordinator, FileTotpRetirementCoordinator, FileActionStepUpStore]) {
+      expect(Object.isFrozen(authority)).toBe(true);
+      expect(Object.isFrozen(authority.prototype)).toBe(true);
+    }
+    expect(Object.isFrozen(coordinator)).toBe(true);
+    expect(Object.isFrozen(f.gate)).toBe(true);
+    // Security lens r5: wrapping the TypeScript-private `pending` on the exported
+    // prototype swapped the enrolment seed, and that seed's code then minted
+    // super_admin with the attacker seed stored as the factor.
+    const ATTACKER_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXQ';
+    type Method = (...args: unknown[]) => Promise<Record<string, unknown>>;
+    const prototype = FileBootstrapCoordinator.prototype as unknown as Record<string, Method>;
+    const pending = prototype.pending;
+    const swapSeed: Method = async function (this: unknown, ...args: unknown[]) {
+      return { ...(await Reflect.apply(pending, this, args)), secret: ATTACKER_SECRET };
+    };
+    expect(() => { prototype.pending = swapSeed; }).toThrow(TypeError);
+    expect(() => Object.defineProperty(prototype, 'pending', { value: swapSeed })).toThrow(TypeError);
+    expect(() => { prototype.bind = async () => ({}); }).toThrow(TypeError);
+    expect(() => Object.defineProperty(coordinator, 'pending', { value: swapSeed })).toThrow(TypeError);
+    expect(() => Object.setPrototypeOf(coordinator, { complete: async () => ({}) })).toThrow(TypeError);
+    expect(() => Object.setPrototypeOf(FileBootstrapCoordinator.prototype, {})).toThrow(TypeError);
+    expect(prototype.pending).toBe(pending);
+    await expect(coordinator.complete({ reference: setup.reference, token: f.token({ secret: ATTACKER_SECRET }) })).rejects.toMatchObject({ code: 'INVALID' });
+    expect(f.project).not.toHaveBeenCalled();
+    expect(f.current.users).toEqual([]);
+    // Non-vacuous: the genuine code still completes, and the stored factor is the coordinator's own seed.
+    await expect(coordinator.complete({ reference: setup.reference, token: f.token(setup) })).resolves.toMatchObject({ handle: 'first-admin' });
+    expect(f.current.users).toMatchObject([{ handle: 'first-admin', role: 'super_admin' }]);
+    const factor = f.current.factor!;
+    expect(f.totp.decrypt({ encrypted: factor.encryptedSecret, iv: factor.iv, tag: factor.authTag, salt: factor.salt })).toBe(setup.secret);
   });
 
   it('beforeComplete can only deny: its result never accepts a code, and its error refuses a valid one', async () => {

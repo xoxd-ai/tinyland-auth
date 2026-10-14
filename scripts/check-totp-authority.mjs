@@ -12,7 +12,9 @@
 // process for NODE_ENV production, unset and development, so no test
 // transform, seam or environment can help it. The 1.1.0 candidate failed this
 // check: `verifyTokenWithStep: async () => ({ valid: true })` minted
-// `{ handle: 'attacker', role: 'super_admin' }` with the code 000000.
+// `{ handle: 'attacker', role: 'super_admin' }` with the code 000000. The
+// 62b4013 head failed section 2f: wrapping the exported
+// FileBootstrapCoordinator.prototype.pending pinned an attacker seed.
 
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
@@ -28,7 +30,7 @@ async function probe(pkgDir) {
   const storageEntry = await import(entry('storage/index.js'));
   const totpEntry = await import(entry('totp/index.js'));
   const { generateAuthenticatorToken } = await import(entry('totp/otplib-compat.js'));
-  const { FileBootstrapCoordinator, FileTotpEnrollmentCoordinator } = storageEntry;
+  const { FileBootstrapCoordinator, FileTotpEnrollmentCoordinator, FileTotpRetirementCoordinator, FileActionStepUpStore } = storageEntry;
   const { TOTPService, createTOTPService } = totpEntry;
   // The method function objects the coordinators captured at module load.
   const original = Object.fromEntries(AUTHORITY_METHODS.map((name) => [name, TOTPService.prototype[name]]));
@@ -135,23 +137,6 @@ async function probe(pkgDir) {
         return error?.code ?? error?.message ?? 'error';
       }
     };
-    // 2a. Patch the instance and the class prototype: the 1.1.0 candidate called
-    // the caller's object, so this alone minted super_admin with a wrong code.
-    const originalPrototypeVerify = TOTPService.prototype.verifyTokenWithStep;
-    service.verifyTokenWithStep = alwaysValid;
-    TOTPService.prototype.verifyTokenWithStep = alwaysValid;
-    out.patchedWrong = await attempt(wrongCode());
-    // 2b. Then also swap the config object's totp and write a coordinator property.
-    config.totp = { ...lookAlike };
-    coordinator.totp = { ...lookAlike };
-    out.patchedZeros = await attempt(new Set([-60, -30, 0, 30, 60].map(codeAt)).has('000000') ? wrongCode() : '000000');
-    out.usersAfterPatched = users.length;
-
-    // 2c. W8 r2 (S2): patch the captured method functions themselves. The r1
-    // fix ran them as `method.call(service, ...)`, and `.call` was looked up on
-    // the shared, unfrozen TOTPService.prototype method, so an own `call` or a
-    // new [[Prototype]] on it minted super_admin with a wrong code.
-    const forged = async () => ({ valid: true, step: 1 });
     const tryPatch = (patch) => {
       try {
         patch();
@@ -160,6 +145,24 @@ async function probe(pkgDir) {
         return 'refused';
       }
     };
+    // 2a. Patch the instance and the class prototype: the 1.1.0 candidate called
+    // the caller's object, so this alone minted super_admin with a wrong code.
+    const originalPrototypeVerify = TOTPService.prototype.verifyTokenWithStep;
+    service.verifyTokenWithStep = alwaysValid;
+    TOTPService.prototype.verifyTokenWithStep = alwaysValid;
+    out.patchedWrong = await attempt(wrongCode());
+    // 2b. Then also swap the config object's totp and try to write a coordinator
+    // property (W8 r3: the instance is frozen, so the write throws).
+    config.totp = { ...lookAlike };
+    out.instanceWrite = tryPatch(() => { coordinator.totp = { ...lookAlike }; });
+    out.patchedZeros = await attempt(new Set([-60, -30, 0, 30, 60].map(codeAt)).has('000000') ? wrongCode() : '000000');
+    out.usersAfterPatched = users.length;
+
+    // 2c. W8 r2 (S2): patch the captured method functions themselves. The r1
+    // fix ran them as `method.call(service, ...)`, and `.call` was looked up on
+    // the shared, unfrozen TOTPService.prototype method, so an own `call` or a
+    // new [[Prototype]] on it minted super_admin with a wrong code.
+    const forged = async () => ({ valid: true, step: 1 });
     out.capturedFrozen = AUTHORITY_METHODS.every((name) => Object.isFrozen(original[name]));
     out.ownCallPatch = tryPatch(() => Object.defineProperty(original.verifyTokenWithStep, 'call', { value: forged, configurable: true }));
     out.ownCallWrong = await attempt(wrongCode());
@@ -202,6 +205,34 @@ async function probe(pkgDir) {
     }
     out.usersAfterFunctionPatches = users.length;
 
+    // 2f. W8 r3 (security lens r5): the exported coordinator classes kept their
+    // helpers as TypeScript-private methods on an unfrozen prototype. Wrapping
+    // FileBootstrapCoordinator.prototype.pending to swap in an attacker seed made
+    // that seed's code mint super_admin and stored it as the factor. Each
+    // authority class, its prototype and its instances are now frozen.
+    const authorities = [FileBootstrapCoordinator, FileTotpEnrollmentCoordinator, FileTotpRetirementCoordinator, FileActionStepUpStore];
+    out.authorityClassesFrozen = authorities.every((authority) => Object.isFrozen(authority) && Object.isFrozen(authority.prototype));
+    out.coordinatorInstanceFrozen = Object.isFrozen(coordinator);
+    const ATTACKER_SEED = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXQ';
+    const proto = FileBootstrapCoordinator.prototype;
+    const originalPending = proto.pending;
+    const swapSeed = async function (...args) {
+      return { ...(await Reflect.apply(originalPending, this, args)), secret: ATTACKER_SEED };
+    };
+    out.coordPrototypeWrap = tryPatch(() => { proto.pending = swapSeed; });
+    out.coordPrototypeDefine = tryPatch(() => Object.defineProperty(proto, 'pending', { value: swapSeed }));
+    out.coordPrototypeBind = tryPatch(() => { proto.bind = () => undefined; });
+    out.coordInstanceDefine = tryPatch(() => Object.defineProperty(coordinator, 'pending', { value: swapSeed }));
+    out.coordInstanceReprototype = tryPatch(() => Object.setPrototypeOf(coordinator, { complete: async () => ({}) }));
+    out.coordOtherPrototypes = authorities.slice(1).map((authority) => {
+      const name = Object.getOwnPropertyNames(authority.prototype).find((key) => key !== 'constructor');
+      return tryPatch(() => { authority.prototype[name] = async () => undefined; });
+    });
+    const attackerCode = generateAuthenticatorToken(ATTACKER_SEED, Math.floor(Date.now() / 1000));
+    const genuineWindow = new Set([-60, -30, 0, 30, 60].map(codeAt));
+    out.coordPendingSeed = await attempt(genuineWindow.has(attackerCode) ? wrongCode() : attackerCode);
+    out.usersAfterCoordinatorPatches = users.length;
+
     // 3. beforeComplete is deny-only.
     gate = async () => ({ valid: true, step: 1 });
     out.affirmingHookWrong = await attempt(wrongCode());
@@ -216,6 +247,8 @@ async function probe(pkgDir) {
     gate = async () => undefined;
     out.genuine = await attempt(genuineCode());
     out.minted = users.map((user) => ({ handle: user.handle, role: user.role }));
+    out.storedFactorIsCoordinatorSeed = factor !== null &&
+      service.decrypt({ encrypted: factor.encryptedSecret, iv: factor.iv, tag: factor.authTag, salt: factor.salt }) === setup.secret;
     TOTPService.prototype.verifyTokenWithStep = originalPrototypeVerify;
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -238,6 +271,7 @@ const EXPECTED = {
   refusedDenyHookShape: true,
   secretNotPinned: true,
   patchedWrong: 'INVALID',
+  instanceWrite: 'refused',
   patchedZeros: 'INVALID',
   usersAfterPatched: 0,
   capturedFrozen: true,
@@ -249,6 +283,16 @@ const EXPECTED = {
   ownCallSeed: 'refused',
   secretNotPinnedAfterFunctionPatch: true,
   usersAfterFunctionPatches: 0,
+  authorityClassesFrozen: true,
+  coordinatorInstanceFrozen: true,
+  coordPrototypeWrap: 'refused',
+  coordPrototypeDefine: 'refused',
+  coordPrototypeBind: 'refused',
+  coordInstanceDefine: 'refused',
+  coordInstanceReprototype: 'refused',
+  coordOtherPrototypes: ['refused', 'refused', 'refused'],
+  coordPendingSeed: 'INVALID',
+  usersAfterCoordinatorPatches: 0,
   affirmingHookWrong: 'INVALID',
   denyingHookGenuine: 'WRITES_CLOSED',
   hookOwnCallPatch: 'applied',
@@ -256,6 +300,7 @@ const EXPECTED = {
   usersAfterHooks: 0,
   genuine: 'completed',
   minted: [{ handle: 'attacker', role: 'super_admin' }],
+  storedFactorIsCoordinatorSeed: true,
 };
 
 if (process.argv[2] === PROBE_FLAG) {
@@ -293,6 +338,7 @@ if (process.argv[2] === PROBE_FLAG) {
   console.log(
     'totp authority clean: ./storage coordinators refuse 7 non-genuine TOTP shapes, ignore patched verifiers ' +
       '(instance, prototype, config, own call / new prototype on the frozen captured methods, Function.prototype.call/apply), ' +
+      'refuse patches of the frozen ./storage authority classes, prototypes and instances (no seed swap), ' +
       'keep beforeComplete deny-only even with a patched call, and mint super_admin only for the genuine code ' +
       '(NODE_ENV production, unset, development)',
   );

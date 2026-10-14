@@ -273,6 +273,9 @@ export class FileBootstrapCoordinator {
     this.filename = path.join(this.directory, 'bootstrap.json');
     this.ttl = config.ttlMs ?? MAX_TTL;
     if (!Number.isSafeInteger(this.ttl) || this.ttl <= 0 || this.ttl > MAX_TTL) invalid();
+    // RS6 (W8 r3): an instance this class constructs is frozen, so no own
+    // property can shadow a method. A subclass is the caller's own code.
+    if (new.target === FileBootstrapCoordinator) Object.freeze(this);
   }
 
   /** System time; only the NODE_ENV=test seam registry can substitute a clock (RS6). */
@@ -547,3 +550,9 @@ export class FileBootstrapCoordinator {
     try { await file.sync(); } finally { await file.close(); }
   }
 }
+
+// RS6 (W8 r3): the class and its prototype are frozen when this module
+// loads. Replacing or wrapping a method (for example one that reads the
+// journal or binds the reference) throws a TypeError and changes nothing.
+Object.freeze(FileBootstrapCoordinator.prototype);
+Object.freeze(FileBootstrapCoordinator);

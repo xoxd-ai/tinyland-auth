@@ -212,6 +212,9 @@ export class FileActionStepUpStore {
         !Number.isSafeInteger(this.maxFailures) || this.maxFailures <= 0 || this.maxFailures > MAX_FAILURES) {
       throw new ActionStepUpError('INVALID', 'Invalid step-up limits');
     }
+    // RS6 (W8 r3): an instance this class constructs is frozen, so no own
+    // property can shadow a method. A subclass is the caller's own code.
+    if (new.target === FileActionStepUpStore) Object.freeze(this);
   }
 
   async issue(binding: ActionStepUpBinding): Promise<ActionStepUpChallenge> {
@@ -456,3 +459,9 @@ export class FileActionStepUpStore {
     }
   }
 }
+
+// RS6 (W8 r3): the class and its prototype are frozen when this module
+// loads. Replacing or wrapping a method (for example one that reads the
+// journal or binds the reference) throws a TypeError and changes nothing.
+Object.freeze(FileActionStepUpStore.prototype);
+Object.freeze(FileActionStepUpStore);

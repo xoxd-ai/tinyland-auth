@@ -47,11 +47,16 @@ a subclass or an instance with an overridden method is refused with `INVALID`,
 and the coordinator always calls the package's own secret generation, cipher
 and RFC 6238 verification. A later patch of the instance, the prototype or
 the captured (frozen) method functions is never called, and the dispatch does
-not look up `Function.prototype.call` (RS6). The guarantee covers the
-package's exported objects and its configuration. It does not cover code in
-the same process that patches a JavaScript or Node.js builtin at any time,
-imports unexported `dist` modules by file URL, or rewrites the installed
-package files.
+not look up `Function.prototype.call` (RS6). `FileTotpEnrollmentCoordinator`
+(the class and its prototype) is frozen when the module loads, and so is each
+instance it constructs, so a method cannot be wrapped or shadowed. The guarantee
+covers `TOTPService`, the four `./storage` authority classes and the config
+object. `loadCurrent`, `project` and `beforeComplete` are the application's own
+trusted code. The guarantee does not cover code in the same process that:
+- patches a JavaScript or Node.js builtin at any time;
+- patches a dependency such as `otplib`;
+- imports unexported `dist` modules by file URL;
+- rewrites the installed package files.
 `beforeComplete` runs once per new completion, after receipt replay has
 returned and immediately before the code is verified; a throw refuses with that
 same error and its return value is ignored.

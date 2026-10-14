@@ -77,14 +77,40 @@ sync (see **File adapter durability** below).
   now throws) is never called, and the coordinators' dispatch does not look
   up `Function.prototype.call`/`apply`. The enrolment secret, the journal
   cipher and the RFC 6238 check are always the package's own.
-  **Scope of the guarantee:** it covers the package's exported objects and
-  its configuration. No configuration, and no patch of an object the package
-  exports, can make a code verify or pin a seed. It is not a defense against
-  code that already runs in the same process with these powers:
+  The four authority classes in `./storage` (`FileBootstrapCoordinator`,
+  `FileTotpEnrollmentCoordinator`, `FileTotpRetirementCoordinator` and
+  `FileActionStepUpStore`) are frozen when the module loads: the class and
+  its prototype. Each constructor also freezes the instance it builds.
+  Replacing or wrapping a method (for example `pending`, which reads the
+  journalled seed) throws a `TypeError`, and so do defining a property on an
+  instance and changing an instance's [[Prototype]].
+  **Scope of the guarantee.** It covers these objects: `TOTPService`
+  (instances, prototype and the captured, frozen methods), the four
+  authority classes (class, prototype and the instances they construct) and
+  the coordinator config object. The config's `totp` and `beforeComplete` are
+  bound at construction, so later edits to them are ignored. No config
+  option and no patch of these objects can make a coordinator accept a code
+  that fails the package's own RFC 6238 check against the seed it generated.
+  Nor can they replace that seed with one the caller chose. The seed is held
+  in the journal, which is authenticated with the TOTP service's encryption
+  key. That key and the issuer are deployment configuration, read from the
+  service instance at each call, so code that holds or sets the key acts as
+  the deployment itself.
+  The application supplies the callbacks (`storage`, `withExclusiveAuth`,
+  `assertNamespaceAvailable`, `loadCurrent`, `project` and `beforeComplete`)
+  and the coordinator trusts them to do their job. They read and persist
+  state, and they can refuse; `beforeComplete` can only refuse. What
+  `project` or a storage adapter persists is the application's
+  responsibility. A subclass of an authority class is also the
+  application's own code, and its instances are not frozen.
+  It is not a defense against code that already runs in the same process
+  with these powers:
   - replacing or patching any JavaScript or Node.js builtin, at any time,
     before or after this package loads. Examples are `Reflect`, `Promise`,
     `WeakSet`, `Function.prototype`, and `String.prototype.padStart`, which
     the RFC 6238 truncation in `@otplib/core` calls.
+  - patching this package's dependencies (`otplib`, `@otplib/*`, `qrcode`,
+    `bcryptjs`, `nanoid`) or the module loader.
   - importing unexported `dist` modules by file URL.
   - rewriting the installed package files.
 

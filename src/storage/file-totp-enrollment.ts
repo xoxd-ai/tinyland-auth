@@ -440,6 +440,9 @@ export class FileTotpEnrollmentCoordinator {
       processGates.set(this.directory, gate);
     }
     this.gate = gate;
+    // RS6 (W8 r3): an instance this class constructs is frozen, so no own
+    // property can shadow a method. A subclass is the caller's own code.
+    if (new.target === FileTotpEnrollmentCoordinator) Object.freeze(this);
   }
 
   /** Reentrant within a request. No callback runs while recovery is incomplete. */
@@ -809,3 +812,9 @@ export class FileTotpEnrollmentCoordinator {
     } finally { await directory.close(); }
   }
 }
+
+// RS6 (W8 r3): the class and its prototype are frozen when this module
+// loads. Replacing or wrapping a method (for example one that reads the
+// journal or binds the reference) throws a TypeError and changes nothing.
+Object.freeze(FileTotpEnrollmentCoordinator.prototype);
+Object.freeze(FileTotpEnrollmentCoordinator);
