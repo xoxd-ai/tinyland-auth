@@ -41,5 +41,4 @@ jobs:
       npm_access: public
       npm_publish_mode: disabled
       dry_run: ${{ !(github.event_name == 'workflow_dispatch' && inputs.publish == true) }}
-      publish_on_tag: true
     secrets: inherit

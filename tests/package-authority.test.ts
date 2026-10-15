@@ -53,7 +53,8 @@ describe('package release authority', () => {
   });
 
   it('keeps npmjs publication disabled in package workflows', async () => {
-    const workflowPaths = ['.github/workflows/ci.yml', '.github/workflows/publish.yml'];
+    // RU8: the release-triggered publish.yml caller is retired; ci.yml is the only package workflow.
+    const workflowPaths = ['.github/workflows/ci.yml'];
 
     for (const workflowPath of workflowPaths) {
       const workflow = await readText(workflowPath);
