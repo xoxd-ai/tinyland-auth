@@ -57,7 +57,6 @@ vitest_bin.vitest_test(
         glob(["docs/**/*.md"])
     ) + [
         ".github/workflows/ci.yml",
-        ".github/workflows/publish.yml",
         "BUILD.bazel",
         "MODULE.bazel",
         "README.md",
