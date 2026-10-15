@@ -1,6 +1,7 @@
 {
   "name": "@tummycrypt/tinyland-auth",
-  "version": "1.0.0",
+  "version": "1.1.0",
+  "private": true,
   "packageManager": "pnpm@10.13.1",
   "description": "Production-grade authentication system with TOTP, RBAC, and pluggable storage",
   "type": "module",
@@ -15,6 +16,10 @@
     "./sveltekit": {
       "types": "./dist/adapters/sveltekit/index.d.ts",
       "import": "./dist/adapters/sveltekit/index.js"
+    },
+    "./sveltekit/server": {
+      "types": "./dist/adapters/sveltekit/server.d.ts",
+      "import": "./dist/adapters/sveltekit/server.js"
     },
     "./storage": {
       "types": "./dist/storage/index.d.ts",
@@ -43,6 +48,10 @@
     "./validation": {
       "types": "./dist/validation/index.d.ts",
       "import": "./dist/validation/index.js"
+    },
+    "./admin-user-repository": {
+      "types": "./dist/admin-user-repository/index.d.ts",
+      "import": "./dist/admin-user-repository/index.js"
     }
   },
   "files": [
@@ -58,7 +67,6 @@
     "dev": "tsc --watch",
     "clean": "rm -rf dist dist-testing",
     "check:package": "publint",
-    "prepublishOnly": "pnpm build && pnpm check:invitation-authority && pnpm check:package && pnpm check:production-artifact",
     "test": "vitest run",
     "test:bazel": "bash scripts/ci-bazel-test.sh",
     "test:coverage": "vitest --coverage",

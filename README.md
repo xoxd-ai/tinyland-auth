@@ -4,25 +4,27 @@ Production-grade authentication system with TOTP, RBAC, and pluggable storage.
 
 ## Consumption And Release Authority
 
-The TypeScript import API stays under `@tummycrypt/tinyland-auth`. Tinyland's
-current release authority for this repo is Bazel-first:
+The TypeScript import API stays under `@tummycrypt/tinyland-auth`. Bzlmod plus
+the Tinyland Bazel registry is the only delivery path for this module (RU6/RU8,
+[TIN-89](https://linear.app/tinyland/issue/TIN-89)):
 
-- CI validates the package through a repo-owned GloriousFlywheel runner lane and
-  `//:pkg //:test //:typecheck`.
-- npmjs publication is disabled in package workflows.
-- GitHub Packages mirror publication uses `@tinyland-inc/tinyland-auth`, because
-  GitHub Packages npm scopes are owner-bound.
-- Bazel consumers should depend through the Tinyland Bazel registry / BCR module
-  path instead of relying on a workspace-local package copy.
-
-`pnpm add @tummycrypt/tinyland-auth` is valid only when the consumer is
-configured for a registry that intentionally serves the `@tummycrypt` package
-scope. It is not the current Tinyland publication authority for this repo.
+- Consumers pin `tummycrypt_tinyland_auth` in `MODULE.bazel` through the
+  Tinyland Bazel registry and link its `//:pkg` with `npm_link_package`, not a
+  package-manager specifier or a workspace-local copy.
+- CI validates the package through the repo-owned GloriousFlywheel runner lane
+  and `//:pkg //:test //:typecheck`.
+- npmjs publication is disabled in package workflows, and there is no
+  GitHub Packages mirror publication for new versions: the manifest is
+  `private: true` and `npm_package(publishable = False)`. Earlier provider
+  artifacts are left in place and are not a delivery or fallback lane.
+- GitHub tags and releases identify the source that a registry entry wraps.
 
 ## Exports
 
 - `.` — core auth: session management, password hashing, permissions, RBAC
 - `./sveltekit` — SvelteKit integration: hooks, guards, CSRF, session cookies
+- `./sveltekit/server` — server-only hooks, guards, cookies and ownership checks;
+  excludes client rune stores and can be imported by plain Node consumers
 - `./storage` — storage adapter interface + memory/file implementations
 - `./types` — TypeScript type definitions
 - `./totp` — TOTP generation and verification
@@ -30,6 +32,9 @@ scope. It is not the current Tinyland publication authority for this repo.
 - `./audit` — audit logging
 - `./cred-gen` — credential generation and display
 - `./validation` — input validation utilities
+- `./admin-user-repository` — flat-file admin account repository and public
+  handle directory (folded from the archived `tinyland-admin-user-repository`
+  under RV15); public reads copy an explicit field allowlist only
 
 ## Invitation Authority
 
@@ -56,6 +61,16 @@ Implement `IStorageAdapter` for your backend:
 
 - **Built-in**: `MemoryStorageAdapter`, `FileStorageAdapter`
 - **Separate packages**: `@tummycrypt/tinyland-auth-pg` (PostgreSQL), `@tummycrypt/tinyland-auth-redis` (Upstash Redis)
+
+### Ordinary onboarding enrollment (source candidate)
+
+The additive `./storage` export `FileTotpEnrollmentCoordinator` provides
+session-bound server-held pending TOTP material and committed/applied recovery
+receipts for the existing single-process databaseless deployment. Applications
+supply durable projections and route protected auth reads and mutations through
+the shared recovery gate. It does not adopt the held 0.8 bootstrap train or
+provide multi-replica guarantees. See the
+[API and integration contract](docs/file-totp-enrollment.md).
 
 ## Tinyland Databaseless MVP
 
@@ -125,7 +140,7 @@ rank; TIN-1606 precedent).
 
 | Role | Axis | Feature charter |
 | --- | --- | --- |
-| `super_admin` | governance-spine | System owner; every permission. |
+| `super_admin` | governance-spine | System owner; every administrative permission. Own publication/federation requires explicit grants. |
 | `admin` | governance-spine | General administration across domains. |
 | `moderator` | governance-spine | Fedi / community moderation. |
 | `editor` | specialist | Blog editorial. |

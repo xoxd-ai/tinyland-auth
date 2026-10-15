@@ -16,6 +16,7 @@ import type {
   AdminInvitation,
   AuditEvent,
 } from '../types/auth.js';
+import type { BoundedSessionPolicy } from '../types/config.js';
 
 
 
@@ -93,6 +94,14 @@ export interface IStorageAdapter {
     userId: string,
     user: Partial<AdminUser>,
     metadata?: SessionMetadata
+  ): Promise<Session>;
+
+  /** Atomic bounded insertion; unsupported adapters must not emulate this with separate writes. */
+  createSessionWithPolicy?(
+    userId: string,
+    user: Partial<AdminUser>,
+    metadata: SessionMetadata | undefined,
+    policy: BoundedSessionPolicy,
   ): Promise<Session>;
 
   
@@ -267,6 +276,7 @@ export interface SessionStorage extends Pick<
   | 'getSessionsByUser'
   | 'getAllSessions'
   | 'createSession'
+  | 'createSessionWithPolicy'
   | 'updateSession'
   | 'deleteSession'
   | 'deleteUserSessions'

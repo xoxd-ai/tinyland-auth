@@ -13,16 +13,19 @@ and is covered by
 ## Bazel And Package Proof
 
 Package adoption is proved through the Bazel package lane, not by treating a
-local pnpm workspace copy as release truth. The CI and publish workflows run on
-the repo-owned GloriousFlywheel runner lane and validate
-`//:pkg //:test //:typecheck`; `//:test` includes the MVP example plus the
-databaseless auth tests.
+local pnpm workspace copy as release truth. CI runs on the
+repo-owned GloriousFlywheel runner lane and validates
+`//:pkg //:test //:typecheck`;
+`//:test` includes the MVP example plus the databaseless auth tests, and
+`//:release_metadata_test`, `//:invitation_authority_test`,
+`//:package_artifact_test` and `//:server_entry_artifact_test` check metadata,
+generated declarations and the real `//:pkg` artifact.
 
-The runtime TypeScript package remains `@tummycrypt/tinyland-auth`. npmjs
-publication is disabled for this repo's workflows; the GitHub Packages mirror is
-`@tinyland-inc/tinyland-auth` because GitHub Packages scopes are owner-bound.
-Bazel consumers should use the Tinyland Bazel registry / BCR module path that
-corresponds to the released package artifact.
+The runtime TypeScript import remains `@tummycrypt/tinyland-auth`. npmjs
+publication is disabled for this repo, and the manifest is private
+(`npm_package(publishable = False)`), so no GitHub Packages version is
+published either. Bazel consumers use the Tinyland Bazel registry module path
+that wraps the tagged source.
 
 ## Authority Planes
 

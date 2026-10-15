@@ -27,6 +27,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const CHECK_SCRIPT = join(ROOT, 'scripts/check-production-artifact.mjs');
+const TOTP_AUTHORITY_SCRIPT = join(ROOT, 'scripts/check-totp-authority.mjs');
 const SENTINEL = 'tinyland-auth-testing-entry-5a9aa858497cf8b557fcbb77';
 const require = createRequire(import.meta.url);
 const TSC = require.resolve('typescript/bin/tsc');
@@ -363,6 +364,52 @@ describe('production entry has no development or seam bypass (RP2)', () => {
     const result = checkArtifact(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('contains "verifyTOTP"');
+  }, 120_000);
+
+  // RS6 (W8 r1): the 1.1.0 candidate's ./storage coordinators took a
+  // structural TOTP object and trusted its verifyTokenWithStep, so an
+  // always-valid stub minted the first super_admin with 000000.
+  const checkTotpAuthority = (dir: string) => spawnSync(process.execPath, [TOTP_AUTHORITY_SCRIPT, dir], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  });
+
+  it('the built ./storage coordinators verify TOTP codes themselves (check-totp-authority)', () => {
+    const result = checkTotpAuthority(cleanPkg);
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('totp authority clean');
+  }, 120_000);
+
+  it('the TOTP authority check turns red when a coordinator trusts the caller object again', () => {
+    const dir = contaminatedCopy('pkg-structural-totp-regression');
+    const file = join(dir, 'dist/storage/file-bootstrap.js');
+    const source = readFileSync(file, 'utf8');
+    const regressed = source.replace('return bindTrustedTOTPService(value);', 'return value;');
+    expect(regressed).not.toBe(source);
+    writeFileSync(file, regressed);
+
+    const result = checkTotpAuthority(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('refusedBootstrap');
+    expect(result.stderr).toContain('patchedWrong is "completed"');
+  }, 120_000);
+
+  it('the TOTP authority check turns red when the captured verifier is called through a patchable .call again (W8 r2)', () => {
+    const dir = contaminatedCopy('pkg-call-lookup-regression');
+    const file = join(dir, 'dist/core/totp/index.js');
+    const source = readFileSync(file, 'utf8');
+    const regressed = source
+      .replace(/for \(const method of Object\.values\(intrinsic\)\)\s*Object\.freeze\(method\);/, '')
+      .replace(/invoke\(intrinsic\.verifyTokenWithStep,\s*service,\s*\[/, 'intrinsic.verifyTokenWithStep.call(service, ...[');
+    expect(regressed).not.toContain('Object.freeze(method)');
+    expect(regressed).toContain('intrinsic.verifyTokenWithStep.call(service, ...[');
+    writeFileSync(file, regressed);
+
+    const result = checkTotpAuthority(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('capturedFrozen is false');
+    expect(result.stderr).toContain('ownCallWrong is "completed"');
   }, 120_000);
 
   it('the artifact check turns red when the mTLS development auto-pass comes back', () => {

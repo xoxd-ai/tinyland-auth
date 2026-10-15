@@ -1,5 +1,155 @@
 # @tummycrypt/tinyland-auth
 
+## 1.1.0
+
+### Minor Changes
+
+Reconciles the reviewed `candidate/nonprod-auth-server-20260925-b5d2fca`
+lineage (the auth source the Mothership writer image already runs through
+`--override_module`) onto 1.0.0, so consumers can resolve it from the
+registry (TIN-3692 RU11). The API is additive for 1.0.0 consumers: no 1.0.0
+export is removed or renamed. Two behavior changes need a check on upgrade:
+the file adapter now fails closed on unreadable or wrongly bound stored TOTP
+and backup-code credentials, and it requires acknowledged file and directory
+sync (see **File adapter durability** below).
+
+- **`./sveltekit/server`**: a rune-free server entry (`createCSRFHandle`,
+  `requireAuth`, `requireContentEditPermission`, ...) that imports in plain
+  Node. `//:server_entry_artifact_test` imports it from the Bazel `//:pkg`.
+- **`./storage` durable coordinators**: `FileBootstrapCoordinator` and
+  `BootstrapJournalError`, `FileTotpEnrollmentCoordinator` (ordinary and
+  bound self-enrollment v2), `FileTotpRetirementCoordinator` and
+  `TotpRetirementError`, `FileActionStepUpStore`, plus their types.
+  `FileActionStepUpStore` accepts the `spoke.owner.bind` action used by the
+  Mothership user-spoke ownership binding route (candidate
+  `auth-spoke-owner-bind-20261001`, 1f1b294).
+- **Bounded sessions**: `SessionConfig.sessionStrategy = 'bounded'` with
+  `BoundedSessionPolicy` and `createSessionWithPolicy` on the file and memory
+  adapters, plus the `deleteTOTPSecretExpected` / `deleteBackupCodesExpected`
+  compare-and-delete helpers.
+- **Permissions**: explicit-grant-only `content.own.publish`
+  (`CONTENT_OWN_PUBLISH`) and `federation.own.deliver`
+  (`FEDERATION_OWN_DELIVER`). No role grants them by default, including
+  `super_admin`; existing permissions are unchanged.
+- **File adapter durability**: JSON writes are acknowledged only after file
+  sync, atomic rename and directory sync. Unreadable, malformed or wrongly
+  bound stored TOTP and backup-code credentials now fail closed; only a
+  missing file counts as an absent credential. Filesystems must support
+  acknowledged file and directory sync.
+
+- **`./admin-user-repository`** (RV15): the archived
+  `@tummycrypt/tinyland-admin-user-repository` module is folded in from its
+  0.2.4 candidate (46c8cbd): `AdminUserRepository`, `adminUserRepository`,
+  `configure`/`getConfig`/`resetConfig`, the public handle directory, and the
+  `federationEnabled` opt-in persisted with durable atomic replacement (only a
+  literal `true` opts in). Public reads (`findAllPublic`, `findByIdPublic`,
+  `findByHandlePublic`) now copy the explicit `PUBLIC_ADMIN_USER_FIELDS`
+  allowlist instead of removing two known secret fields, so any other stored
+  credential material never reaches a public projection. The allowlist is the
+  17-field monorepo projection (tinyland.dev f7e32942): `email`, `permissions`,
+  `isLocked`, `federationEnabled` and the profile fields are **not** part of
+  `PublicAdminUser` (the archived standalone's `Omit` projection returned
+  them). Read grants and opt-ins through `findById`/`findAll` behind a
+  capability check instead. Consumers replace the
+  `tummycrypt_tinyland_admin_user_repository` bazel_dep with this subpath; the
+  standalone repository stays archived. The default `filePermissions` is now
+  `0o600` (was `0o666`); configure it explicitly to keep a wider mode.
+
+### RS6 reconciliation
+
+- The candidate's public `now` options on `FileBootstrapConfig`,
+  `FileTotpEnrollmentConfig`, `FileTotpRetirementConfig` and
+  `FileActionStepUpConfig` are **not** released. The coordinators read the
+  internal seam clock (`src/core/seams`), which only the `NODE_ENV=test`
+  testing build can install, exactly like 1.0.0's `TOTPService` and
+  `SessionManager`. Production code always uses system time.
+- **No injectable TOTP verifier (RS6/RP2).** `FileBootstrapCoordinator` and
+  `FileTotpEnrollmentCoordinator` take `totp: TOTPService`, and the
+  constructor accepts only an instance made by the package's own
+  `TOTPService` constructor (`createTOTPService`): a structural look-alike,
+  a wrapper object, a subclass, a re-prototyped instance or an instance with
+  an own `generateSecret`, `generateQRCode`, `encrypt`, `decrypt` or
+  `verifyTokenWithStep` is refused with `INVALID`. The coordinators then run
+  the class methods captured when the module loaded, through `Reflect.apply`
+  captured at the same time, and those method functions are frozen. A later
+  patch of the instance, of `TOTPService.prototype`, of the config object or
+  of a captured method function (an own `call`, or a new [[Prototype]], which
+  now throws) is never called, and the coordinators' dispatch does not look
+  up `Function.prototype.call`/`apply`. The enrolment secret, the journal
+  cipher and the RFC 6238 check are always the package's own.
+  The four authority classes in `./storage` (`FileBootstrapCoordinator`,
+  `FileTotpEnrollmentCoordinator`, `FileTotpRetirementCoordinator` and
+  `FileActionStepUpStore`) are frozen when the module loads: the class and
+  its prototype. Each constructor also freezes the instance it builds.
+  Replacing or wrapping a method (for example `pending`, which reads the
+  journalled seed) throws a `TypeError`, and so do defining a property on an
+  instance and changing an instance's [[Prototype]].
+  **Scope of the guarantee.** It covers these objects: `TOTPService`
+  (instances, prototype and the captured, frozen methods), the four
+  authority classes (class, prototype and the instances they construct) and
+  the coordinator config object. The config's `totp` and `beforeComplete` are
+  bound at construction, so later edits to them are ignored. No config
+  option and no patch of these objects can make a coordinator accept a code
+  that fails the package's own RFC 6238 check against the seed it generated.
+  Nor can they replace that seed with one the caller chose. The seed is held
+  in the journal, which is authenticated with the TOTP service's encryption
+  key. That key and the issuer are deployment configuration, read from the
+  service instance at each call, so code that holds or sets the key acts as
+  the deployment itself.
+  The application supplies the callbacks (`storage`, `withExclusiveAuth`,
+  `assertNamespaceAvailable`, `loadCurrent`, `project` and `beforeComplete`)
+  and the coordinator trusts them to do their job. They read and persist
+  state, and they can refuse; `beforeComplete` can only refuse. What
+  `project` or a storage adapter persists is the application's
+  responsibility. A subclass of an authority class is also the
+  application's own code, and its instances are not frozen.
+  It is not a defense against code that already runs in the same process
+  with these powers:
+  - replacing or patching any JavaScript or Node.js builtin, at any time,
+    before or after this package loads. Examples are `Reflect`, `Promise`,
+    `WeakSet`, `Function.prototype`, and `String.prototype.padStart`, which
+    the RFC 6238 truncation in `@otplib/core` calls.
+  - patching this package's dependencies (`otplib`, `@otplib/*`, `qrcode`,
+    `bcryptjs`, `nanoid`) or the module loader.
+  - importing unexported `dist` modules by file URL.
+  - rewriting the installed package files.
+
+  Code that can do any of these already controls the process, and no
+  JavaScript library can contain it.
+
+  The candidate's structural `Pick<TOTPService, ...>` option (which let
+  `verifyTokenWithStep: async () => ({ valid: true })` mint the first
+  `super_admin`) is not released.
+- **`beforeComplete` deny-only gate.** Both coordinators take an optional
+  `beforeComplete(operation)` (`'bootstrap.complete'` or `'totp.complete'`),
+  awaited under the gate once per NEW completion (through the captured
+  `Reflect.apply`, so an own `call` on the hook cannot skip it), after
+  committed/applied
+  replay has returned and immediately before the coordinator verifies the
+  code. A throw or rejection refuses with that same error and leaves the
+  pending attempt untouched; the return value is ignored, so it cannot accept
+  a code. This replaces the candidate's delegating `totp` wrapper used to hold
+  completions behind an application write-activation phase.
+  **Consumer migration** (Mothership `authorityCompletionTotp`): pass the
+  `TOTPService` itself as `totp` and the activation check as
+  `beforeComplete: (operation) => requireAuthorityWriteActivation(operation)`.
+- `tests/production-artifact.test.ts` and `//:totp_authority_artifact_test`
+  prove this on the built package under `NODE_ENV` production, unset and
+  development: every refused shape throws, patched verifiers are ignored
+  (including an own `call` or a new [[Prototype]] on the captured method
+  functions, and a `Function.prototype.call`/`apply` patch), a denying hook
+  with a patched `call` still denies, a wrong code mints no user, and the
+  genuine code still completes.
+
+### Release surface
+
+- The manifest is `private: true` and `npm_package(publishable = False)`;
+  `prepublishOnly` is gone (RU6/RU8). Delivery is the Bzlmod registry entry
+  only. `ci.yml` and the validation-only `publish.yml` from 1.0.0 stay.
+- The candidate's inert GF v4 lane file and its workflow-absence contract test
+  are not carried over: 1.0.0 already registers the three qualification
+  targets (#61). The inert plan documents stay for reference.
+
 ## 1.0.0
 
 ### Major Changes

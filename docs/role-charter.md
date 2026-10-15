@@ -41,7 +41,8 @@ Precedent: TIN-1606 (decision-of-record, 2026-05-25) ratified
 generalizes it: specialist capabilities never flow up the governance spine
 implicitly. Do not write tests asserting rank-superset monotonicity — the
 property is false by design (`super_admin` is the only role guaranteed to
-hold everything).
+hold every administrative permission; explicit-only own-scope grants are
+separate).
 
 ## Invariants P1 / P2 / P3
 
@@ -56,10 +57,12 @@ in `tests/rbac-invariants.test.ts`:
   `admin.content.view`, `admin.events.view`). Every role ranked at or above
   `member` holds a superset of the core: reaching any higher role never
   costs a user their member self-service capabilities.
-- **P3 — registry guard.** Every permission string granted anywhere in
-  `ROLE_PERMISSIONS` appears in `PERMISSION_FEATURE_DOMAIN`, and vice
-  versa. Domains are derived from the string shape `admin.<domain>.<verb>`
-  (`admin.access` → `access`); the ratified domain set is `access`,
+- **P3 — registry guard.** `PERMISSION_FEATURE_DOMAIN` covers the complete
+  permission vocabulary. Role-granted permissions and
+  `EXPLICIT_USER_PERMISSIONS` form disjoint, exhaustive sets; registering an
+  explicit-only permission does not grant it to any role. Domains are derived
+  from `admin.<domain>.<verb>` (`admin.access` → `access`) or
+  `<domain>.own.<verb>`; the ratified domain set is `access`,
   `users`, `content`, `events`, `analytics`, `settings`, `security`,
   `logs`, `federation`. Do not invent domains — `federation` (the ninth)
   was a deliberate charter amendment, operator-ratified 2026-07-07
@@ -80,11 +83,26 @@ Operator-ratified 2026-07-07:
   at or above it. No specialist (`editor`, `event_manager`, `contributor`)
   and no role below `moderator` (`member`, `viewer`) holds it: the lattice
   is explicit-array (grants do not flow up by rank), so `admin` holds the
-  grant explicitly and `super_admin` holds it via the full-vocabulary row.
+  grant explicitly and `super_admin` holds it via the full admin-vocabulary row.
 - Predicate: `canDeliverFederation(role)` derives from `ROLE_PERMISSIONS`
   via the SSOT helper, like every other `can*` predicate.
 - Semantics are intentionally limited to `view`/`deliver`; consumer wiring
   (e.g. pulse delivery workers) is a separate lane (C4).
+
+## Explicit own-scope amendment (2026-09-19)
+
+`content.own.publish` and `federation.own.deliver` are explicit user capabilities
+in the existing `content` and `federation` domains, not new roles or default
+member grants. They use `AdminUser.permissions[]` and remain explicit-only
+even for `super_admin`. This amends P3's original role-only registry coverage;
+the governance order, member floor, and administrative capability matrix stay
+unchanged.
+
+The user-aware `hasPermission()` family recognizes each grant independently.
+It does not grant administrative publication/delivery or cross-user authority.
+Consumers still enforce current-principal security state, resource ownership,
+and public-delivery policy. Role-only `can*` helpers remain unchanged. See
+[the explicit own-scope contract](./rbac-matrix.md#explicit-own-scope-permissions).
 
 ## Role × feature charter (ratified)
 
@@ -92,13 +110,13 @@ Operator-ratified 2026-07-04, TIN-2435:
 
 | Role | Axis | Charter |
 | --- | --- | --- |
-| `super_admin` | governance-spine | System owner; holds every permission; sole holder of destructive/exporting grants (`users.delete`, `analytics.export`, `settings.manage`, `security.*`, `logs.export`). |
+| `super_admin` | governance-spine | System owner; holds every administrative permission; sole default holder of destructive/exporting grants (`users.delete`, `analytics.export`, `settings.manage`, `security.*`, `logs.export`). Own-scope capabilities require explicit grants. |
 | `admin` | governance-spine | General administration across domains: user management, content/events lifecycle including deletion, settings and logs view, federation view/deliver (0.5.0, TIN-2637). |
 | `moderator` | governance-spine | **Fedi / community moderation**: `content.moderate`, `users.view`, `logs.view`, `federation.view`/`federation.deliver` (0.5.0, TIN-2637), plus public publishing and the member core. |
 | `editor` | specialist | **Blog editorial**: `content.manage`, `content.publish`, `content.media_create`, analytics view, plus the member core. |
 | `event_manager` | specialist | **Events / calendaring**: `events.manage`, public publishing, analytics view, plus the member core. |
 | `contributor` | specialist | **Drafts / submissions**: authors content including media (`content.media_create`) and public-visibility posts (`content.publish`), plus the member core. No manage/moderate/delete grants. |
-| `member` | governance-spine | **Self-service core**: `admin.access`, `admin.content.view`, `admin.events.view` — own-content and own-event self-service; may author members/private-visibility content only. |
+| `member` | governance-spine | **Self-service core**: `admin.access`, `admin.content.view`, `admin.events.view` — own-content and own-event self-service; members/private-visibility authoring by default. Own public publication/delivery require explicit grants. |
 | `viewer` | governance-spine | Read-only admin surface: `admin.access`, `admin.analytics.view`. Below the member floor; holds no self-service authoring capability. |
 
 ## Predicate derivation

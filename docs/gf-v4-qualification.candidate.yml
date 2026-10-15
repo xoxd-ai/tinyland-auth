@@ -1,0 +1,27 @@
+# INERT SOURCE CANDIDATE: this file is not a GitHub Actions workflow.
+# Keep it under docs/ until the activation prerequisites in
+# gf-v4-qualification-preparation.md have been reviewed and satisfied.
+name: GF v4 qualification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  qualify:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        action: [unit-tests, package-check]
+    uses: xoxd-ai/ci-templates/.github/workflows/spoke-ci-v4.yml@ae836d8400d5784d74af4fecc020f225d1c2d08e
+    with:
+      action_name: ${{ matrix.action }}

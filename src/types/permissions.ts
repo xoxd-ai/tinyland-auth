@@ -31,10 +31,14 @@ export type AdminPermission =
   | 'admin.federation.view'
   | 'admin.federation.deliver';
 
+// Own-scope capabilities are explicit user grants, never role defaults.
+export type OwnPermission = 'content.own.publish' | 'federation.own.deliver';
+
+export type Permission = AdminPermission | OwnPermission;
 
 
 
-export const PERMISSIONS = {
+const ADMIN_PERMISSIONS = {
   ADMIN_ACCESS: 'admin.access',
   ADMIN_USERS_VIEW: 'admin.users.view',
   ADMIN_USERS_MANAGE: 'admin.users.manage',
@@ -60,6 +64,19 @@ export const PERMISSIONS = {
   ADMIN_FEDERATION_DELIVER: 'admin.federation.deliver',
 } as const;
 
+export const PERMISSIONS = {
+  ...ADMIN_PERMISSIONS,
+  CONTENT_OWN_PUBLISH: 'content.own.publish',
+  FEDERATION_OWN_DELIVER: 'federation.own.deliver',
+} as const satisfies Record<string, Permission>;
+
+// These permissions require the current principal's permissions[] carrier,
+// including for super_admin. Consumers must independently enforce ownership.
+export const EXPLICIT_USER_PERMISSIONS: readonly OwnPermission[] = Object.freeze([
+  PERMISSIONS.CONTENT_OWN_PUBLISH,
+  PERMISSIONS.FEDERATION_OWN_DELIVER,
+]);
+
 // ROLE_PERMISSIONS is the single source of truth for role capabilities.
 // It is an INTENTIONAL LATTICE (operator-ratified, TIN-2435; precedent
 // TIN-1606): governance rank (ROLE_HIERARCHY) orders who manages whom,
@@ -67,7 +84,7 @@ export const PERMISSIONS = {
 // Invariant P2 (TIN-2435): every role ranked at or above `member` holds
 // MEMBER_SELF_SERVICE_CORE (the member row) as a floor.
 export const ROLE_PERMISSIONS: Record<AdminRole, string[]> = {
-  super_admin: Object.values(PERMISSIONS),
+  super_admin: Object.values(ADMIN_PERMISSIONS),
 
   admin: [
     PERMISSIONS.ADMIN_ACCESS,
@@ -156,8 +173,8 @@ export const MEMBER_SELF_SERVICE_CORE: readonly string[] = Object.freeze([
   ...ROLE_PERMISSIONS.member,
 ]);
 
-// Feature domains are derived from the existing permission string shape
-// `admin.<domain>.<verb>` (with `admin.access` -> `access`). Do not invent
+// Feature domains are derived from `admin.<domain>.<verb>` (with
+// `admin.access` -> `access`) or `<domain>.own.<verb>`. Do not invent
 // new domains; the nine below are the ratified set. The original eight were
 // ratified under TIN-2435; `federation` is the ninth domain, deliberately
 // amended into the charter by the R2 ratification (TIN-2638, operator-
@@ -176,9 +193,9 @@ export const FEATURE_DOMAINS = [
 
 export type FeatureDomain = (typeof FEATURE_DOMAINS)[number];
 
-// P3 registry (TIN-2435): every permission string that appears in
-// ROLE_PERMISSIONS must appear here, and vice versa.
-export const PERMISSION_FEATURE_DOMAIN: Record<AdminPermission, FeatureDomain> = {
+// P3 registry: covers role permissions plus the explicit-only own-scope
+// capabilities. Registration does not grant a permission to any role.
+export const PERMISSION_FEATURE_DOMAIN: Record<Permission, FeatureDomain> = {
   'admin.access': 'access',
   'admin.users.view': 'users',
   'admin.users.manage': 'users',
@@ -202,6 +219,8 @@ export const PERMISSION_FEATURE_DOMAIN: Record<AdminPermission, FeatureDomain> =
   'admin.logs.export': 'logs',
   'admin.federation.view': 'federation',
   'admin.federation.deliver': 'federation',
+  'content.own.publish': 'content',
+  'federation.own.deliver': 'federation',
 };
 
 // Two-axis role charter (operator-ratified 2026-07-04, TIN-2435).

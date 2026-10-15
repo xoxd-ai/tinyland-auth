@@ -35,13 +35,21 @@ describe('package release authority', () => {
   it('keeps the TypeScript import API under the @tummycrypt scope', async () => {
     const packageJson = JSON.parse(await readText('package.json')) as {
       name?: string;
+      private?: unknown;
       publishConfig?: unknown;
+      scripts?: Record<string, string>;
     };
     const buildBazel = await readText('BUILD.bazel');
 
     expect(packageJson.name).toBe('@tummycrypt/tinyland-auth');
     expect(packageJson.publishConfig).toBeUndefined();
+    // RU6/RU8: Bzlmod is the only delivery path; no package-manager publication.
+    expect(packageJson.private).toBe(true);
+    for (const hook of ['prepublish', 'prepublishOnly', 'publish', 'postpublish']) {
+      expect(packageJson.scripts?.[hook]).toBeUndefined();
+    }
     expect(buildBazel).toContain('package = "@tummycrypt/tinyland-auth"');
+    expect(buildBazel).toContain('publishable = False');
   });
 
   it('keeps npmjs publication disabled in package workflows', async () => {
@@ -91,6 +99,13 @@ describe('package release authority', () => {
     );
     expect(buildBazel).toMatch(
       /js_test\(\s*name = "production_artifact_test",\s*args = \["\$\(rootpath :pkg\)"\]/,
+    );
+    // RS6 (W8 r1): the coordinators' TOTP authority is proven on the same artifact.
+    expect(bazelTestScript).toContain(
+      'npx --yes @bazel/bazelisk test //:totp_authority_artifact_test --test_output=errors',
+    );
+    expect(buildBazel).toMatch(
+      /js_test\(\s*name = "totp_authority_artifact_test",\s*args = \["\$\(rootpath :pkg\)"\]/,
     );
   });
 

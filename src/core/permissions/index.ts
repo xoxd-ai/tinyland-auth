@@ -8,7 +8,7 @@
 
 
 import { ROLE_HIERARCHY, isValidAdminRole, type AdminRole, type AdminUser } from '../../types/auth.js';
-import { PERMISSIONS, ROLE_PERMISSIONS, type AdminPermission, type ContentVisibility } from '../../types/permissions.js';
+import { EXPLICIT_USER_PERMISSIONS, PERMISSIONS, ROLE_PERMISSIONS, type AdminPermission, type OwnPermission, type ContentVisibility } from '../../types/permissions.js';
 
 
 
@@ -26,6 +26,9 @@ export function getRolePermissions(role: AdminRole | string): string[] {
 
 
 export function hasPermission(user: AdminUser, permission: string): boolean {
+  if (EXPLICIT_USER_PERMISSIONS.includes(permission as OwnPermission)) {
+    return user.permissions?.includes(permission) === true;
+  }
   if (user.role === 'super_admin') {
     return true;
   }
@@ -82,7 +85,7 @@ export function requireAllPermissions(user: AdminUser, permissions: string[]): v
 
 export function getUserPermissions(user: AdminUser): string[] {
   if (user.role === 'super_admin') {
-    return Object.values(PERMISSIONS);
+    return Object.values(PERMISSIONS).filter(permission => hasPermission(user, permission));
   }
   const rolePerms = getRolePermissions(user.role);
   const userPerms = user.permissions || [];
@@ -141,6 +144,8 @@ export function getPermissionDisplayName(permission: string): string {
     [PERMISSIONS.ADMIN_LOGS_EXPORT]: 'Export Logs',
     [PERMISSIONS.ADMIN_FEDERATION_VIEW]: 'View Federation',
     [PERMISSIONS.ADMIN_FEDERATION_DELIVER]: 'Deliver Federation',
+    [PERMISSIONS.CONTENT_OWN_PUBLISH]: 'Publish Own Public Content',
+    [PERMISSIONS.FEDERATION_OWN_DELIVER]: 'Deliver Own Federation Content',
   };
   return displayNames[permission] || permission;
 }
