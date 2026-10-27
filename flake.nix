@@ -15,6 +15,7 @@
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             bazel_8
+            just
             nodejs_22
             (pnpm_10 or pnpm)
           ];

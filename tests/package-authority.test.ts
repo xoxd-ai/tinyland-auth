@@ -80,9 +80,12 @@ describe('package release authority', () => {
 
     expect(packageJson.scripts?.['test:bazel']).toBe('bash scripts/ci-bazel-test.sh');
     expect(bazelTestScript).toContain(
-      'npx --yes @bazel/bazelisk test //:test //:typecheck --test_output=errors',
+      '"${bazel[@]}" --batch test //:test //:typecheck --test_output=errors',
     );
-    expect(bazelTestScript).not.toMatch(/@bazel\/bazelisk build\b/);
+    expect(bazelTestScript).not.toMatch(/--batch build\b/);
+    // One-shot --batch calls only, and the npx fallback is pinned (TIN-5770).
+    expect(bazelTestScript).not.toMatch(/@bazel\/bazelisk\s/);
+    expect(bazelTestScript).not.toMatch(/^\s*"\$\{bazel\[@\]\}" (?!--batch )/m);
   });
 
   it('runs the RS5/RS6 production-exclusion proof on the npm tarball and the Bazel artifact', async () => {
@@ -96,14 +99,14 @@ describe('package release authority', () => {
       'node scripts/pack-and-check-production-artifact.mjs',
     );
     expect(bazelTestScript).toContain(
-      'npx --yes @bazel/bazelisk test //:production_artifact_test --test_output=errors',
+      '"${bazel[@]}" --batch test //:production_artifact_test --test_output=errors',
     );
     expect(buildBazel).toMatch(
       /js_test\(\s*name = "production_artifact_test",\s*args = \["\$\(rootpath :pkg\)"\]/,
     );
     // RS6 (W8 r1): the coordinators' TOTP authority is proven on the same artifact.
     expect(bazelTestScript).toContain(
-      'npx --yes @bazel/bazelisk test //:totp_authority_artifact_test --test_output=errors',
+      '"${bazel[@]}" --batch test //:totp_authority_artifact_test --test_output=errors',
     );
     expect(buildBazel).toMatch(
       /js_test\(\s*name = "totp_authority_artifact_test",\s*args = \["\$\(rootpath :pkg\)"\]/,
