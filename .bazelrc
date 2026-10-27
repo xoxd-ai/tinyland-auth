@@ -1,3 +1,6 @@
+# Bound the local server: it exits after 120 s idle (TIN-5770, R470).
+startup --max_idle_secs=120
+
 common --enable_bzlmod
 
 build --jobs=auto
@@ -5,6 +8,9 @@ build --worker_sandboxing
 build --disk_cache=~/.cache/bazel-tinyland-auth
 build --show_timestamps
 build --@aspect_rules_ts//ts:skipLibCheck=always
+# No remote lane is enrolled. Never fall back to local behind a remote one
+# (TIN-5770, R471).
+build --remote_local_fallback=false
 
 test --test_output=errors
 test --test_timeout=120,600,1800,3600
